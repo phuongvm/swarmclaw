@@ -6,6 +6,7 @@ import { notFound } from '@/lib/server/collection-helpers'
 import { safeParseBody } from '@/lib/server/safe-parse-body'
 import { streamAgentChat } from '@/lib/server/chat-execution/stream-agent-chat'
 import { getProvider } from '@/lib/providers'
+import { NON_LANGGRAPH_PROVIDER_IDS } from '@/lib/provider-sets'
 import {
   resolveApiKey,
   parseMentions,
@@ -25,7 +26,7 @@ import {
   selectChatroomRecipients,
 } from '@/lib/server/chatrooms/chatroom-routing'
 import { markProviderFailure, markProviderSuccess } from '@/lib/server/provider-health'
-import { applyAgentReactionsFromText } from '@/lib/server/chatrooms/chatroom-agent-signals'
+import { applyAgentReactionsFromText, stripAgentReactionTokens } from '@/lib/server/chatrooms/chatroom-agent-signals'
 import { resolvePrimaryAgentRoute } from '@/lib/server/agents/agent-runtime-config'
 import { shouldSuppressHiddenControlText, stripHiddenControlTokens } from '@/lib/server/agents/assistant-control'
 import type { Chatroom, ChatroomMessage, Agent } from '@/types'
@@ -46,7 +47,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const chatroom = chatrooms[id] as Chatroom | undefined
   if (!chatroom) return notFound()
 
-  const text = typeof body.text === 'string' ? body.text : ''
+  const text = typeof body.text === 'string'
+    ? body.text
+    : (typeof body.message === 'string' ? body.message : '')
   const senderId = typeof body.senderId === 'string' ? body.senderId : 'user'
   const imagePath = typeof body.imagePath === 'string' ? body.imagePath : undefined
   const attachedFiles = Array.isArray(body.attachedFiles)
@@ -229,38 +232,56 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
             let fullText = ''
             let agentError = ''
-            const result = await streamAgentChat({
-              session: syntheticSession,
-              message: messageForAgent,
-              imagePath,
-              attachedFiles,
-              apiKey,
-              systemPrompt: fullSystemPrompt,
-              write: (raw: string) => {
-                const lines = raw.split('\n').filter(Boolean)
-                for (const line of lines) {
-                  if (!line.startsWith('data: ')) continue
-                  try {
-                    const parsed = JSON.parse(line.slice(6).trim())
-                    if (parsed.t === 'd' && parsed.text) {
-                      fullText += parsed.text
-                      writeEvent({ t: 'd', text: parsed.text, agentId: agent.id, agentName: agent.name })
-                    } else if (parsed.t === 'tool_call' || parsed.t === 'tool_result') {
-                      writeEvent({ ...parsed, agentId: agent.id, agentName: agent.name })
-                    } else if (parsed.t === 'err' && parsed.text) {
-                      agentError = parsed.text
-                      writeEvent({ t: 'err', text: parsed.text, agentId: agent.id, agentName: agent.name })
-                    }
-                  } catch {
-                    // skip malformed lines
+            const forwardProviderEvents = (raw: string) => {
+              const lines = raw.split('\n').filter(Boolean)
+              for (const line of lines) {
+                if (!line.startsWith('data: ')) continue
+                try {
+                  const parsed = JSON.parse(line.slice(6).trim())
+                  if (parsed.t === 'd' && parsed.text) {
+                    fullText += parsed.text
+                    writeEvent({ t: 'd', text: parsed.text, agentId: agent.id, agentName: agent.name })
+                  } else if (parsed.t === 'tool_call' || parsed.t === 'tool_result') {
+                    writeEvent({ ...parsed, agentId: agent.id, agentName: agent.name })
+                  } else if (parsed.t === 'err' && parsed.text) {
+                    agentError = parsed.text
+                    writeEvent({ t: 'err', text: parsed.text, agentId: agent.id, agentName: agent.name })
                   }
+                } catch {
+                  // skip malformed lines
                 }
-              },
-              history,
-            })
+              }
+            }
 
-            const rawResponseText = result.finalResponse || result.fullText || fullText
-            const responseText = stripHiddenControlTokens(rawResponseText)
+            let rawResponseText = ''
+            if (NON_LANGGRAPH_PROVIDER_IDS.has(syntheticSession.provider)) {
+              const provider = getProvider(syntheticSession.provider)
+              if (!provider) throw new Error(`Unknown provider: ${syntheticSession.provider}`)
+              rawResponseText = await provider.handler.streamChat({
+                session: syntheticSession,
+                message: messageForAgent,
+                imagePath,
+                apiKey,
+                systemPrompt: fullSystemPrompt,
+                write: forwardProviderEvents,
+                active: new Map<string, unknown>(),
+                loadHistory: () => history,
+              })
+              if (!rawResponseText) rawResponseText = fullText
+            } else {
+              const result = await streamAgentChat({
+                session: syntheticSession,
+                message: messageForAgent,
+                imagePath,
+                attachedFiles,
+                apiKey,
+                systemPrompt: fullSystemPrompt,
+                write: forwardProviderEvents,
+                history,
+              })
+              rawResponseText = result.finalResponse || result.fullText || fullText
+            }
+            const responseText = stripAgentReactionTokens(stripHiddenControlTokens(rawResponseText))
 
             // Don't persist empty or error-only messages — they pollute chat history
             if (!responseText.trim() && agentError) {

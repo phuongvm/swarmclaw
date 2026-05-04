@@ -211,10 +211,17 @@ export type PrepareScheduleUpdateResult =
     }
 
 export function prepareScheduleUpdate(options: PrepareScheduleUpdateOptions): PrepareScheduleUpdateResult {
+  const nextStatus = normalizeScheduleStatus(options.patch.status)
+  const shouldRecomputeNextRunAt = !('nextRunAt' in options.patch) && (
+    ['scheduleType', 'cron', 'intervalMs', 'runAt', 'timezone', 'staggerSec']
+      .some((key) => key in options.patch)
+    || (nextStatus === 'active' && options.current.status !== 'active')
+  )
   const normalized = normalizeSchedulePayload({
     ...options.current,
     ...options.patch,
     id: options.id,
+    ...(shouldRecomputeNextRunAt ? { nextRunAt: undefined } : {}),
   }, {
     cwd: options.cwd,
     now: options.now,
@@ -237,8 +244,8 @@ export function prepareScheduleUpdate(options: PrepareScheduleUpdateOptions): Pr
   })
 
   const entries: Array<[string, ScheduleLike]> = [[options.id, nextSchedule]]
-  const nextStatus = normalizeScheduleStatus(nextSchedule.status)
-  if (options.propagateEquivalentStatuses && (nextStatus === 'paused' || nextStatus === 'completed' || nextStatus === 'failed' || nextStatus === 'archived')) {
+  const normalizedStatus = normalizeScheduleStatus(nextSchedule.status)
+  if (options.propagateEquivalentStatuses && (normalizedStatus === 'paused' || normalizedStatus === 'completed' || normalizedStatus === 'failed' || normalizedStatus === 'archived')) {
     const relatedIds = findRelatedScheduleIds(
       options.schedules,
       options.propagationSource || options.current,
@@ -249,7 +256,7 @@ export function prepareScheduleUpdate(options: PrepareScheduleUpdateOptions): Pr
       if (!related) continue
       entries.push([relatedId, {
         ...related,
-        status: nextStatus,
+        status: normalizedStatus,
         updatedAt: options.now,
       }])
     }

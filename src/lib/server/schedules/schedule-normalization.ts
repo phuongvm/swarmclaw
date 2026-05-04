@@ -319,7 +319,10 @@ export function normalizeSchedulePayload(payload: SchedulePayload, opts: Normali
         const cronTimezone = trimString(normalized.timezone)
         const interval = CronExpressionParser.parse(
           normalized.cron as string,
-          cronTimezone ? { tz: cronTimezone } : undefined,
+          {
+            ...(cronTimezone ? { tz: cronTimezone } : {}),
+            currentDate: new Date(now),
+          },
         )
         normalized.nextRunAt = applyStagger(interval.next().getTime(), normalized.staggerSec as number | null)
       } catch {

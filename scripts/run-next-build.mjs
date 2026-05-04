@@ -11,13 +11,15 @@ import { ensureBuildBootstrapPaths } from './build-bootstrap-env.mjs'
 
 const require = createRequire(import.meta.url)
 
-export const DEFAULT_MAX_OLD_SPACE_SIZE_MB = '8192'
+export const DEFAULT_MAX_OLD_SPACE_SIZE_MB = '24576'
 export const MIN_MAX_OLD_SPACE_SIZE_MB = 1024
 export const FALLBACK_MIN_MAX_OLD_SPACE_SIZE_MB = 512
 export const RESERVED_BUILD_MEMORY_MB = 768
-export const MAX_OLD_SPACE_RATIO = 0.75
+export const MAX_OLD_SPACE_RATIO = 0.85
 export const LOW_MEMORY_RATIO = 0.6
 export const BUILD_MAX_OLD_SPACE_SIZE_ENV = 'SWARMCLAW_BUILD_MAX_OLD_SPACE_SIZE_MB'
+export const BUILD_BUNDLER_ENV = 'SWARMCLAW_BUILD_BUNDLER'
+export const DEFAULT_BUILD_BUNDLER = 'turbopack'
 export const CGROUP_MEMORY_LIMIT_PATHS = [
   '/sys/fs/cgroup/memory.max',
   '/sys/fs/cgroup/memory/memory.limit_in_bytes',
@@ -34,6 +36,20 @@ export const NEXT_STANDALONE_METADATA_RELATIVE_DIR = path.join(
 export const REQUIRED_NEXT_METADATA_FILES = [
   'get-metadata-route.js',
   'is-metadata-route.js',
+]
+export const REQUIRED_STANDALONE_BROWSER_PACKAGES = [
+  '@playwright/mcp',
+  'playwright',
+  'playwright-core',
+]
+export const STANDALONE_LOCAL_STATE_ENTRIES = [
+  '.git',
+  '.tmp-swarmclaw-build',
+  'artifacts',
+  'coverage',
+  'data',
+  'release',
+  'test-results',
 ]
 
 function parsePositiveInteger(value) {
@@ -128,6 +144,18 @@ export function buildNextBuildEnv(
   }
 }
 
+export function resolveNextBuildBundlerFlag(args = [], env = process.env) {
+  if (args.includes('--webpack') || args.includes('--turbopack')) return null
+
+  const requested = String(env[BUILD_BUNDLER_ENV] || DEFAULT_BUILD_BUNDLER).trim().toLowerCase()
+  if (requested === 'webpack') return '--webpack'
+  if (requested === 'turbopack') return '--turbopack'
+
+  throw new Error(
+    `${BUILD_BUNDLER_ENV} must be "turbopack" or "webpack"; received ${JSON.stringify(requested)}.`,
+  )
+}
+
 export function hasTraceCopyWarning(output = '') {
   return output.includes(TRACE_COPY_WARNING)
 }
@@ -164,14 +192,48 @@ export function repairStandaloneCssTreeData(cwd = process.cwd()) {
   const standaloneDir = path.join(cwd, '.next', 'standalone')
   if (!fs.existsSync(standaloneDir)) return false
 
-  const dataDst = path.join(standaloneDir, 'node_modules', 'css-tree', 'data')
-  if (fs.existsSync(dataDst)) return false
+  let repaired = false
 
-  const dataSrc = path.join(cwd, 'node_modules', 'css-tree', 'data')
-  if (!fs.existsSync(dataSrc)) return false
+  const cssTreeDst = path.join(standaloneDir, 'node_modules', 'css-tree', 'data')
+  const cssTreeSrc = path.join(cwd, 'node_modules', 'css-tree', 'data')
+  if (!fs.existsSync(cssTreeDst) && fs.existsSync(cssTreeSrc)) {
+    fs.cpSync(cssTreeSrc, cssTreeDst, { recursive: true, force: true })
+    repaired = true
+  }
 
-  fs.cpSync(dataSrc, dataDst, { recursive: true, force: true })
-  return true
+  // css-tree's CJS entry calls require('mdn-data/css/*.json') at load time,
+  // and Next's output-tracing does not pull the raw JSON data files into the
+  // standalone tree. Copy them in so jsdom (via css-tree) loads correctly
+  // under the packaged app.
+  const mdnDataDst = path.join(standaloneDir, 'node_modules', 'mdn-data')
+  const mdnDataSrc = path.join(cwd, 'node_modules', 'mdn-data')
+  if (!fs.existsSync(mdnDataDst) && fs.existsSync(mdnDataSrc)) {
+    fs.cpSync(mdnDataSrc, mdnDataDst, { recursive: true, force: true })
+    repaired = true
+  }
+
+  return repaired
+}
+
+export function repairStandaloneBrowserMcpRuntime(cwd = process.cwd()) {
+  const standaloneDir = path.join(cwd, '.next', 'standalone')
+  if (!fs.existsSync(standaloneDir)) return false
+
+  let repaired = false
+  const standaloneNodeModules = path.join(standaloneDir, 'node_modules')
+  for (const packageName of REQUIRED_STANDALONE_BROWSER_PACKAGES) {
+    const sourceDir = path.join(cwd, 'node_modules', ...packageName.split('/'))
+    const targetDir = path.join(standaloneNodeModules, ...packageName.split('/'))
+    if (!fs.existsSync(sourceDir)) {
+      throw new Error(`Missing required browser MCP runtime package under ${sourceDir}.`)
+    }
+
+    fs.mkdirSync(path.dirname(targetDir), { recursive: true })
+    fs.cpSync(sourceDir, targetDir, { recursive: true, force: true })
+    repaired = true
+  }
+
+  return repaired
 }
 
 export function repairStandaloneNextMetadata(cwd = process.cwd()) {
@@ -200,6 +262,27 @@ export function repairStandaloneNextMetadata(cwd = process.cwd()) {
   return true
 }
 
+export function pruneStandaloneLocalState(cwd = process.cwd()) {
+  const standaloneDir = path.join(cwd, '.next', 'standalone')
+  if (!fs.existsSync(standaloneDir)) return false
+
+  let pruned = false
+  for (const entry of STANDALONE_LOCAL_STATE_ENTRIES) {
+    const target = path.join(standaloneDir, entry)
+    if (!fs.existsSync(target)) continue
+    fs.rmSync(target, { recursive: true, force: true })
+    pruned = true
+  }
+
+  for (const entry of fs.readdirSync(standaloneDir, { withFileTypes: true })) {
+    if (entry.name !== '.env' && !entry.name.startsWith('.env.')) continue
+    fs.rmSync(path.join(standaloneDir, entry.name), { recursive: entry.isDirectory(), force: true })
+    pruned = true
+  }
+
+  return pruned
+}
+
 export function runNextBuild(
   args = process.argv.slice(2),
   env = process.env,
@@ -207,7 +290,8 @@ export function runNextBuild(
   maxOldSpaceSizeMb = resolveNextBuildMaxOldSpaceSizeMb(env),
 ) {
   const nextBin = require.resolve('next/dist/bin/next')
-  return spawnSync(process.execPath, [nextBin, 'build', '--webpack', ...args], {
+  const bundlerFlag = resolveNextBuildBundlerFlag(args, env)
+  return spawnSync(process.execPath, [nextBin, 'build', ...(bundlerFlag ? [bundlerFlag] : []), ...args], {
     stdio: 'pipe',
     encoding: 'utf-8',
     env: buildNextBuildEnv(env, maxOldSpaceSizeMb, cwd),
@@ -234,6 +318,12 @@ function main() {
     }
     if (result.status === 0 && repairStandaloneCssTreeData(process.cwd())) {
       console.error('Copied css-tree/data/ into standalone build output.')
+    }
+    if (result.status === 0 && repairStandaloneBrowserMcpRuntime(process.cwd())) {
+      console.error('Copied Playwright MCP runtime packages into standalone build output.')
+    }
+    if (result.status === 0 && pruneStandaloneLocalState(process.cwd())) {
+      console.error('Pruned local state and release artifacts from standalone build output.')
     }
     process.exit(result.status)
   }

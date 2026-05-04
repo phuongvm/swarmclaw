@@ -67,12 +67,26 @@ export interface Agent {
   delegationEnabled?: boolean
   delegationTargetMode?: DelegationTargetMode
   delegationTargetAgentIds?: string[]
+  /**
+   * Cap on sibling subagents this agent may dispatch concurrently via
+   * `spawn_subagent` swarm/batch actions. Resolves after the mission-level
+   * cap and before the system default (4). Hard-capped at 16.
+   */
+  maxParallelDelegations?: number | null
   tools?: string[]
+  // When 'scoped', the chat turn restricts enabled extensions to the
+  // intersection of the universal core list and agent.tools (plus a small
+  // non-negotiable baseline for memory + context management). Default
+  // 'universal' preserves existing behavior. Opt in to cut per-turn tool
+  // guidance dramatically — a focused agent with 5 tools drops ~15 k chars
+  // of tool-related prompt text vs. the full 33-tool universe.
+  toolAccessMode?: 'universal' | 'scoped'
   extensions?: string[]
   skills?: string[]             // e.g. ['frontend-design'] — pinned Claude Code skills to mention explicitly
   skillIds?: string[]           // IDs of pinned managed skills to keep always-on for this agent
   mcpServerIds?: string[]       // IDs of configured MCP servers to inject tools from
   mcpDisabledTools?: string[]   // MCP tool names disabled for this agent (denylist)
+  mcpEagerTools?: string[]      // Per-agent allowlist of MCP tool names to bind eagerly even when the server's alwaysExpose is false
   orgChart?: AgentOrgChart | null
   capabilities?: string[]       // e.g. ['frontend', 'screenshots', 'research', 'devops']
   threadSessionId?: string | null  // persistent shortcut chat session for agent-centric UI
@@ -118,6 +132,14 @@ export interface Agent {
   proactiveMemory?: boolean
   /** Auto-refresh a reviewed skill draft from meaningful chat turns for this agent. */
   autoDraftSkillSuggestions?: boolean
+  /**
+   * Planning enforcement mode.
+   * - 'off' (default): no extra planning guidance
+   * - 'strict': instruct the model to emit a [MAIN_LOOP_PLAN] block before any
+   *   tool call on multi-step turns. The existing main-agent-loop plan parser
+   *   reads these blocks into MainLoopState.planSteps.
+   */
+  planningMode?: 'off' | 'strict' | null
   /** Controls whether file operations are confined to the workspace or allowed anywhere on the host. Default: 'workspace'. */
   filesystemScope?: 'workspace' | 'machine' | null
   /** Per-agent filesystem restrictions. Globs matched against resolved paths. */

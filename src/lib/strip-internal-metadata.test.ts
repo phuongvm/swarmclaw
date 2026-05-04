@@ -35,6 +35,29 @@ describe('stripInternalJson', () => {
     assert.equal(stripInternalJson(input).trim(), '')
   })
 
+  it('removes multi-line working-state JSON with nested strings and arrays', () => {
+    const input = [
+      'Answer first.',
+      '{',
+      '  "factsUpsert": [{ "title": "Nested", "value": "brace } inside a string" }],',
+      '  "questionsUpsert": []',
+      '}',
+      'Answer second.',
+    ].join('\n')
+    const result = stripInternalJson(input)
+    assert.equal(result, 'Answer first. Answer second.')
+  })
+
+  it('preserves objects with internal-looking keys when schema validation fails', () => {
+    const input = 'The score object is { "quality_score": "high", "quality_reasoning": 42 }'
+    assert.equal(stripInternalJson(input), input)
+  })
+
+  it('preserves taskIntent-only user JSON without classifier fields', () => {
+    const input = 'Example payload: { "taskIntent": "book a flight" }'
+    assert.equal(stripInternalJson(input), input)
+  })
+
   it('handles multiple JSON blocks, only removing internal ones', () => {
     const input = '{ "isDeliverableTask": true } some text { "foo": "bar" }'
     const result = stripInternalJson(input)

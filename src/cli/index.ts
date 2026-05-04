@@ -45,9 +45,18 @@ function resolveDefaultAccessKey(cwd: string = process.cwd()): string {
   ).trim()
   if (envKey) return envKey
 
-  const keyFile = path.join(cwd, 'platform-api-key.txt')
-  if (!fs.existsSync(keyFile)) return ''
-  return fs.readFileSync(keyFile, 'utf8').trim()
+  const keyLocations = [
+    path.join(cwd, 'platform-api-key.txt'),
+  ]
+  const serviceHome = (process.env.SWARMCLAW_HOME || '').trim()
+  if (serviceHome) keyLocations.push(path.join(serviceHome, 'platform-api-key.txt'))
+
+  for (const keyFile of keyLocations) {
+    if (!fs.existsSync(keyFile)) continue
+    const value = fs.readFileSync(keyFile, 'utf8').trim()
+    if (value) return value
+  }
+  return ''
 }
 
 const DEFAULT_ACCESS_KEY = resolveDefaultAccessKey()

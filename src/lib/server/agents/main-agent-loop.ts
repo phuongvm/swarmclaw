@@ -17,6 +17,7 @@ import { syncMainLoopToRunContext } from '@/lib/server/run-context'
 import { buildExecutionBrief, buildExecutionBriefContextBlock } from '@/lib/server/execution-brief'
 import { cleanText, cleanMultiline } from '@/lib/server/text-normalization'
 import { getGoalById, resolveEffectiveGoal } from '@/lib/server/goals/goal-service'
+import { getMission } from '@/lib/server/missions/mission-repository'
 
 const LEGACY_META_LINE_RE = /\[(?:MAIN_LOOP_META|MAIN_LOOP_PLAN|MAIN_LOOP_REVIEW|AGENT_HEARTBEAT_META|AUTONOMY_TICK)\]\s*(\{[^\n]*\})?/i
 const AUTONOMY_TICK_RE = /\[AUTONOMY_TICK\]\s*(\{[^\n]*\})/i
@@ -513,6 +514,13 @@ function resolveSessionGoalRecord(session: Session | null | undefined): Record<s
     ? String(s.missionId).trim()
     : ''
   if (legacyMissionId) {
+    // Prefer the mission's bound goal (so Initiative/Project ancestry flows in)
+    // over treating the missionId itself as a goal id.
+    const mission = getMission(legacyMissionId)
+    if (mission?.goalId) {
+      const boundGoal = getGoalById(mission.goalId)
+      if (boundGoal) return boundGoal as unknown as Record<string, unknown>
+    }
     const missionGoal = getGoalById(legacyMissionId)
     if (missionGoal) return missionGoal as unknown as Record<string, unknown>
   }
@@ -1113,22 +1121,129 @@ export function buildMainLoopHeartbeatPrompt(session: unknown, fallbackPrompt: s
   ].filter(Boolean).join('\n')
 }
 
+import { z } from 'zod'
+import { WorkingStatePatchSchema } from '@/lib/server/working-state/normalization'
+import { MessageClassificationSchema } from '@/lib/server/chat-execution/message-classifier'
+import { ResponseCompletenessSchema } from '@/lib/server/chat-execution/response-completeness'
+
+// Side-channel classifier outputs that occasionally bleed into the visible
+// assistant text from cloud models. Each rule pairs a zod schema with at
+// least one distinctive field so unrelated JSON the user actually wants to
+// see (config blobs, API examples, snippets like {"status":"ok"}) stays in
+// the message instead of being silently scrubbed.
+const QualityScoreSchema = z.object({
+  quality_score: z.number(),
+  quality_reasoning: z.string(),
+}).passthrough()
+
+interface InternalPayloadRule {
+  schema: z.ZodType<unknown>
+  distinctiveKeys: string[]
+}
+
+const INTERNAL_PAYLOAD_RULES: InternalPayloadRule[] = [
+  {
+    schema: WorkingStatePatchSchema,
+    distinctiveKeys: [
+      'factsUpsert',
+      'artifactsUpsert',
+      'planSteps',
+      'decisionsAppend',
+      'blockersUpsert',
+      'questionsUpsert',
+      'hypothesesUpsert',
+      'supersedeIds',
+    ],
+  },
+  {
+    schema: MessageClassificationSchema,
+    distinctiveKeys: ['taskIntent', 'isLightweightDirectChat', 'isDeliverableTask'],
+  },
+  {
+    schema: ResponseCompletenessSchema,
+    distinctiveKeys: ['isIncomplete'],
+  },
+  {
+    schema: QualityScoreSchema,
+    distinctiveKeys: ['quality_score'],
+  },
+]
+
+function objectIsInternalMetadata(obj: Record<string, unknown>): boolean {
+  for (const { schema, distinctiveKeys } of INTERNAL_PAYLOAD_RULES) {
+    if (!distinctiveKeys.some((key) => key in obj)) continue
+    if (schema.safeParse(obj).success) return true
+  }
+  return false
+}
+
 function isInternalMetadataJson(line: string): boolean {
   const trimmed = line.trim()
   if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return false
   try {
     const obj = JSON.parse(trimmed)
     if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return false
-    if ('isDeliverableTask' in obj && 'confidence' in obj) return true
-    if ('quality_score' in obj && 'quality_reasoning' in obj) return true
-    return false
+    return objectIsInternalMetadata(obj as Record<string, unknown>)
   } catch {
     return false
   }
 }
 
+function findBalancedJsonObjectEnd(text: string, start: number): number {
+  if (text.charAt(start) !== '{') return -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i += 1) {
+    const c = text.charAt(i)
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === '\\') escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') {
+      inString = true
+      continue
+    }
+    if (c === '{') depth += 1
+    else if (c === '}') {
+      depth -= 1
+      if (depth === 0) return i + 1
+    }
+  }
+  return -1
+}
+
+function stripInternalJsonBlobs(text: string): string {
+  let out = text || ''
+  for (let guard = 0; guard < 16; guard += 1) {
+    let removed = false
+    for (let i = 0; i < out.length; i += 1) {
+      if (out.charAt(i) !== '{') continue
+      const end = findBalancedJsonObjectEnd(out, i)
+      if (end <= i) continue
+      const candidate = out.slice(i, end)
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(candidate)
+      } catch {
+        continue
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue
+      if (!objectIsInternalMetadata(parsed as Record<string, unknown>)) continue
+      out = (out.slice(0, i).replace(/\s+$/, '') + ' ' + out.slice(end).replace(/^\s+/, '')).trim()
+      removed = true
+      break
+    }
+    if (!removed) break
+  }
+  return out
+}
+
 export function stripMainLoopMetaForPersistence(text: string): string {
-  return (text || '')
+  const withoutBlobs = stripInternalJsonBlobs(text || '')
+  return withoutBlobs
     .split('\n')
     .filter((line) => !LEGACY_META_LINE_RE.test(line) && !isInternalMetadataJson(line))
     .join('\n')

@@ -2,6 +2,31 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { runWithTempDataDir } from '@/lib/server/test-utils/run-with-temp-data-dir'
 
+test('protocol-service exposes v1.6 built-in templates for release, research, and builder flows', () => {
+  const output = runWithTempDataDir<{
+    ids: string[]
+    releaseOutputs: string[]
+    builderKinds: string[]
+  }>(`
+    const protocolsMod = await import('./src/lib/server/protocols/protocol-templates')
+    const protocols = protocolsMod.default || protocolsMod
+    const templates = protocols.listAllTemplates()
+    const release = templates.find((template) => template.id === 'release_readiness_panel')
+    const builder = templates.find((template) => template.id === 'builder_review_loop')
+    console.log(JSON.stringify({
+      ids: templates.map((template) => template.id),
+      releaseOutputs: release?.recommendedOutputs || [],
+      builderKinds: builder?.defaultPhases?.map((phase) => phase.kind) || [],
+    }))
+  `, { prefix: 'swarmclaw-protocol-templates-' })
+
+  assert.ok(output.ids.includes('release_readiness_panel'))
+  assert.ok(output.ids.includes('research_bureau_synthesis'))
+  assert.ok(output.ids.includes('builder_review_loop'))
+  assert.ok(output.releaseOutputs.includes('go/no-go decision'))
+  assert.deepEqual(output.builderKinds, ['present', 'collect_independent_inputs', 'compare', 'emit_tasks', 'summarize'])
+})
+
 test('protocol-service creates a hidden transcript run and completes a structured session', () => {
   const output = runWithTempDataDir<{
     status: string | null

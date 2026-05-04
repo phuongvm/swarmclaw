@@ -28,6 +28,7 @@ import {
 } from '@/lib/server/chat-execution/memory-mutation-tools'
 import { shouldForceAttachmentFollowthrough } from '@/lib/server/chat-execution/prompt-builder'
 import { shouldSkipToolSummaryForShortResponse } from '@/lib/server/chat-execution/chat-streaming-utils'
+import { toolSummaryHasMeaningfulProgress } from '@/lib/server/chat-execution/tool-summary-progress'
 import { logExecution, type LogCategory } from '@/lib/server/execution-log'
 
 // ---------------------------------------------------------------------------
@@ -369,8 +370,14 @@ function checkToolSummary(ctx: ContinuationContext): ContinuationDecision | null
     isConnectorSession: ctx.isConnectorSession,
   })
   if (skipToolSummaryForShortResponse) return null
+  // A 119-char response like "I wrote X, stored Y, and confirmed both." is
+  // substantive after two tool calls — it names each action. The prior
+  // 150-char threshold treated such responses as trivial preambles and
+  // forced a redundant retry that streamed the same answer twice. Tightened
+  // to 80 so only genuinely short preambles ("Done.", "Let me do that…")
+  // trigger the summary continuation.
   const textIsTrivial = !ctx.state.fullText.trim() || (
-    !ctx.isConnectorSession && ctx.state.fullText.trim().length < 150
+    !ctx.isConnectorSession && ctx.state.fullText.trim().length < 80
     && (
       ctx.state.streamedToolEvents.length >= 2
       || ctx.likelyResearchSynthesisTask
@@ -378,6 +385,15 @@ function checkToolSummary(ctx: ContinuationContext): ContinuationDecision | null
     )
   )
   if (!textIsTrivial) return null
+  const currentLen = ctx.state.fullText.length
+  const priorLen = ctx.state.lastToolSummaryTextLen
+  if (!toolSummaryHasMeaningfulProgress(priorLen, currentLen)) {
+    logStatus(ctx, 'decision', `Tool summary retry skipped — no meaningful progress (delta=${currentLen - priorLen} chars)`, {
+      priorLen, currentLen, toolEventCount: ctx.state.streamedToolEvents.length,
+    })
+    return null
+  }
+  ctx.state.lastToolSummaryTextLen = currentLen
   const count = ctx.limits.increment('tool_summary')
   const summaryReason = !ctx.state.fullText.trim() ? 'empty_response_after_tools' : 'trivial_preamble_after_tools'
   logStatus(ctx, 'decision', `Tools called but response text is trivial (${ctx.state.fullText.trim().length} chars) — forcing summary continuation`, {

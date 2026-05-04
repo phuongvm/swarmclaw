@@ -1,12 +1,13 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
 import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { HomeLaunchpad } from '@/components/home/home-launchpad'
+import { OperationsPulsePanel } from '@/components/operations/operations-pulse-panel'
 import { useMountedRef } from '@/hooks/use-mounted-ref'
 import { useNow } from '@/hooks/use-now'
 import { api } from '@/lib/app/api-client'
@@ -109,6 +110,7 @@ export default function HomePage() {
   const [localhostBrowser, setLocalhostBrowser] = useState(false)
   const [pageReady, setPageReady] = useState(false)
   const [launchpadFlag, setLaunchpadFlag] = useState(false)
+  const launchpadFlagConsumedRef = useRef(false)
   const mountedRef = useMountedRef()
 
   useEffect(() => {
@@ -116,9 +118,12 @@ export default function HomePage() {
   }, [])
 
   useEffect(() => {
+    if (launchpadFlagConsumedRef.current) return
     const hasFlag = safeStorageGet(HOME_LAUNCHPAD_AFTER_SETUP_KEY) === '1'
-    setLaunchpadFlag(hasFlag)
-    if (hasFlag) safeStorageRemove(HOME_LAUNCHPAD_AFTER_SETUP_KEY)
+    if (!hasFlag) return
+    launchpadFlagConsumedRef.current = true
+    setLaunchpadFlag(true)
+    safeStorageRemove(HOME_LAUNCHPAD_AFTER_SETUP_KEY)
   }, [])
 
   const allAgents = Object.values(agents).filter((a) => !a.trashedAt)
@@ -262,6 +267,10 @@ export default function HomePage() {
     router.push(DEFAULT_BUILDER_ROUTE)
   }
 
+  const openMissionTemplate = (templateId: string) => {
+    router.push(`/missions?template=${encodeURIComponent(templateId)}`)
+  }
+
   if (homeMode === 'launchpad') {
     return (
       <MainContent>
@@ -279,6 +288,13 @@ export default function HomePage() {
             onOpenBuilder={openBuilder}
             onOpenConnectors={() => navigateTo('connectors')}
             onOpenUsage={() => navigateTo('usage')}
+            onRunEvalSuite={() => navigateTo('quality')}
+            onReviewApprovals={() => navigateTo('quality')}
+            onInspectFailedRuns={() => navigateTo('quality')}
+            onStartReleaseQaMission={() => openMissionTemplate('release-candidate-qa')}
+            onStartLaunchSprintMission={() => openMissionTemplate('launch-week-growth-sprint')}
+            onStartCostAuditMission={() => openMissionTemplate('agent-cost-audit')}
+            onStartConnectorSmokeMission={() => openMissionTemplate('connector-smoke-test')}
           />
         </div>
       </MainContent>
@@ -298,6 +314,8 @@ export default function HomePage() {
               Workspace overview for your agent chats, tasks, and automations
             </p>
           </div>
+
+          <OperationsPulsePanel className="mb-8" compact />
 
           {/* Quick actions / triage */}
           <section className="mb-8" style={{ animation: 'fade-up 0.6s var(--ease-spring) 0.15s both' }}>

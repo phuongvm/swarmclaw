@@ -248,6 +248,182 @@ describe('queue recovery', () => {
     assert.equal(output.scheduledCalls, 1)
   })
 
+  it('scheduleRetryOrDeadLetter via stall recovery clears checkoutRunId so the next attempt can check out', () => {
+    // Regression: a task transitioning running -> queued on retry must release its
+    // prior checkout. Without this, checkoutTask() returns null on every attempt
+    // and the orphan-recovery loop burns CPU re-queueing a task that can never run.
+    const output = runWithTempDataDir<{
+      status: string | null
+      checkoutRunId: string | null
+      queued: string[]
+      attempts: number | null
+    }>(`
+      const storageMod = await import('@/lib/server/storage')
+      const queueMod = await import('@/lib/server/runtime/queue')
+      const storage = storageMod.default || storageMod
+      const queue = queueMod.default || queueMod
+
+      const now = Date.now()
+      storage.saveSettings({
+        ...storage.loadSettings(),
+        taskStallTimeoutMin: 5,
+        taskRetryBackoffSec: 30,
+      })
+      storage.saveTasks({
+        stuck: {
+          id: 'stuck',
+          title: 'Stuck with stale checkout',
+          description: 'Running task that stalled and must release its checkout on retry',
+          status: 'running',
+          agentId: 'agent-a',
+          startedAt: now - 600_000,
+          updatedAt: now - 600_000,
+          createdAt: now - 700_000,
+          maxAttempts: 3,
+          attempts: 0,
+          checkoutRunId: 'stale-run-id',
+        },
+      })
+      storage.saveQueue([])
+
+      const originalSetTimeout = globalThis.setTimeout
+      globalThis.setTimeout = () => 0
+      try {
+        queue.recoverStalledRunningTasks()
+      } finally {
+        globalThis.setTimeout = originalSetTimeout
+      }
+
+      const task = storage.loadTasks().stuck
+      console.log(JSON.stringify({
+        status: task?.status ?? null,
+        checkoutRunId: task?.checkoutRunId ?? null,
+        queued: storage.loadQueue(),
+        attempts: task?.attempts ?? null,
+      }))
+    `)
+
+    assert.equal(output.status, 'queued', 'task should be requeued for retry')
+    assert.equal(output.checkoutRunId, null, 'stale checkoutRunId must be released so retry can check out')
+    assert.deepEqual(output.queued, ['stuck'])
+    assert.equal(output.attempts, 1)
+  })
+
+  it('processNext orphan recovery clears stale checkoutRunId on queued tasks', () => {
+    // Regression: tasks written before the 1.5.38 fix could land in storage with
+    // status='queued' + a set checkoutRunId (because the old scheduleRetryOrDeadLetter
+    // forgot to release the checkout). Orphan recovery must repair this invalid combo
+    // so the next checkoutTask() can succeed — otherwise the loop spins forever.
+    const output = runWithTempDataDir<{
+      status: string | null
+      checkoutRunId: string | null
+      queued: string[]
+    }>(`
+      const storageMod = await import('@/lib/server/storage')
+      const queueMod = await import('@/lib/server/runtime/queue')
+      const storage = storageMod.default || storageMod
+      const queue = queueMod.default || queueMod
+
+      const now = Date.now()
+      storage.saveAgents({
+        'agent-a': {
+          id: 'agent-a',
+          name: 'Agent A',
+          provider: 'openai',
+          model: 'gpt-test',
+          createdAt: now,
+          updatedAt: now,
+        },
+      })
+      storage.saveTasks({
+        stale: {
+          id: 'stale',
+          title: 'Pre-1.5.38 stuck task',
+          description: 'Queued but still holds a stale checkoutRunId from a prior failed run',
+          status: 'queued',
+          agentId: 'agent-a',
+          checkoutRunId: 'stale-run-id',
+          createdAt: now - 10_000,
+          updatedAt: now - 10_000,
+        },
+      })
+      // Intentionally NOT in the queue array — simulates the orphan condition.
+      storage.saveQueue([])
+
+      await queue.processNext()
+
+      const task = storage.loadTasks().stale
+      console.log(JSON.stringify({
+        status: task?.status ?? null,
+        checkoutRunId: task?.checkoutRunId ?? null,
+        queued: storage.loadQueue(),
+      }))
+    `)
+
+    // Orphan recovery should have put the task back in the queue AND cleared the stale id.
+    assert.equal(output.checkoutRunId, null, 'orphan recovery must clear stale checkoutRunId')
+    // After recovery the task either stayed queued or moved to running (depending on concurrency).
+    // Either way it must not still be stuck in an orphan state.
+    assert.ok(
+      output.status === 'queued' || output.status === 'running' || output.status === 'failed',
+      `unexpected status after recovery: ${output.status}`,
+    )
+  })
+
+  it('dead-letter path clears checkoutRunId so terminal tasks do not appear checked-out', () => {
+    const output = runWithTempDataDir<{
+      status: string | null
+      checkoutRunId: string | null
+      attempts: number | null
+    }>(`
+      const storageMod = await import('@/lib/server/storage')
+      const queueMod = await import('@/lib/server/runtime/queue')
+      const storage = storageMod.default || storageMod
+      const queue = queueMod.default || queueMod
+
+      const now = Date.now()
+      storage.saveSettings({
+        ...storage.loadSettings(),
+        taskStallTimeoutMin: 5,
+      })
+      storage.saveTasks({
+        doomed: {
+          id: 'doomed',
+          title: 'Exhausted retries',
+          description: 'Task at its last attempt that stalls should dead-letter and release checkout',
+          status: 'running',
+          agentId: 'agent-a',
+          startedAt: now - 600_000,
+          updatedAt: now - 600_000,
+          createdAt: now - 700_000,
+          maxAttempts: 2,
+          attempts: 1,
+          checkoutRunId: 'stale-run-id',
+        },
+      })
+      storage.saveQueue([])
+
+      const originalSetTimeout = globalThis.setTimeout
+      globalThis.setTimeout = () => 0
+      try {
+        queue.recoverStalledRunningTasks()
+      } finally {
+        globalThis.setTimeout = originalSetTimeout
+      }
+
+      const task = storage.loadTasks().doomed
+      console.log(JSON.stringify({
+        status: task?.status ?? null,
+        checkoutRunId: task?.checkoutRunId ?? null,
+        attempts: task?.attempts ?? null,
+      }))
+    `)
+
+    assert.equal(output.status, 'failed', 'task should be dead-lettered after exhausting retries')
+    assert.equal(output.checkoutRunId, null, 'dead-lettered tasks must not retain a stale checkoutRunId')
+    assert.equal(output.attempts, 2)
+  })
+
   it('resumeQueue restores blocked queued tasks without clobbering their queuedAt timestamp', () => {
     const output = runWithTempDataDir<{
       queued: string[]

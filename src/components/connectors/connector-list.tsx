@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
 import type { Connector } from '@/types'
+import { getConnectorReadiness, hasConnectorCredentials } from '@/lib/connectors/connector-readiness'
 import {
   ConnectorPlatformIcon,
   ConnectorPlatformBadge,
@@ -27,20 +28,10 @@ function relativeTime(ts: number): string {
 
 type ConnectorGroup = 'needs-setup' | 'attention' | 'healthy'
 
-function hasConnectorCredentials(connector: Connector): boolean {
-  return connector.platform === 'whatsapp'
-    || connector.platform === 'openclaw'
-    || connector.platform === 'signal'
-    || (connector.platform === 'bluebubbles' && (!!connector.credentialId || !!connector.config?.password))
-    || !!connector.credentialId
-}
-
 function getConnectorGroup(connector: Connector): ConnectorGroup {
-  const missingRoute = !connector.agentId && !connector.chatroomId
-  const needsSetup = !hasConnectorCredentials(connector) || !!connector.qrDataUrl || missingRoute
-  if (needsSetup) return 'needs-setup'
-  if (connector.status === 'running' && !connector.lastError) return 'healthy'
-  return 'attention'
+  const readiness = getConnectorReadiness(connector)
+  if (readiness.state === 'needs_setup') return 'needs-setup'
+  return readiness.state
 }
 
 export function ConnectorList({ inSidebar }: { inSidebar?: boolean }) {
@@ -274,12 +265,14 @@ export function ConnectorList({ inSidebar }: { inSidebar?: boolean }) {
                     const isToggling = toggling === c.id
                     const hasCredentials = hasConnectorCredentials(c)
                     const lastMsg = c.presence?.lastMessageAt
-                    const missingRoute = !chatroom && !agent
-                    const issues = [
-                      !hasCredentials ? { label: 'Credentials missing', tone: 'text-red-400 bg-red-500/10' } : null,
-                      c.qrDataUrl ? { label: 'QR required', tone: 'text-amber-400 bg-amber-500/10' } : null,
-                      missingRoute ? { label: 'Routing missing', tone: 'text-amber-300 bg-amber-500/10' } : null,
-                    ].filter(Boolean) as Array<{ label: string; tone: string }>
+                    const readiness = getConnectorReadiness(c)
+                    const issues = readiness.checks
+                      .filter((check) => check.status !== 'ready')
+                      .map((check) => ({
+                        label: check.label,
+                        detail: check.detail,
+                        tone: check.status === 'error' ? 'text-red-400 bg-red-500/10' : 'text-amber-300 bg-amber-500/10',
+                      }))
 
                     return (
                       <div
@@ -359,7 +352,7 @@ export function ConnectorList({ inSidebar }: { inSidebar?: boolean }) {
                         {issues.length > 0 ? (
                           <div className="flex flex-wrap gap-1.5 mb-3">
                             {issues.map((issue) => (
-                              <span key={issue.label} className={`px-2 py-1 rounded-[7px] text-[10px] font-700 ${issue.tone}`}>
+                              <span key={issue.label} title={issue.detail} className={`px-2 py-1 rounded-[7px] text-[10px] font-700 ${issue.tone}`}>
                                 {issue.label}
                               </span>
                             ))}
@@ -369,6 +362,21 @@ export function ConnectorList({ inSidebar }: { inSidebar?: boolean }) {
                             {platformLabel} routed to {chatroom ? 'chatroom' : agent ? 'agent' : 'connector'}.
                           </div>
                         )}
+
+                        <div className="mb-3 rounded-[10px] border border-white/[0.04] bg-white/[0.02] px-3 py-2">
+                          <div className="text-[10px] font-700 uppercase tracking-[0.08em] text-text-3/55">Readiness</div>
+                          <div className="mt-1 text-[11px] text-text-2">{readiness.summary}</div>
+                          <div className="mt-2 flex flex-col gap-1">
+                            {readiness.checks.slice(0, 3).map((check) => (
+                              <div key={check.id} className="flex items-start justify-between gap-2 text-[10px]">
+                                <span className="text-text-3/65">{check.label}</span>
+                                <span className={`max-w-[150px] break-words text-right ${check.status === 'ready' ? 'text-emerald-300' : check.status === 'error' ? 'text-red-300' : 'text-amber-300'}`}>
+                                  {check.detail}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
 
                         <div className="flex items-center gap-2 mt-auto pt-2 border-t border-white/[0.04]">
                           {c.lastError ? (
@@ -382,6 +390,14 @@ export function ConnectorList({ inSidebar }: { inSidebar?: boolean }) {
                           )}
 
                           <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                            <a
+                              href={readiness.doctorHref}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="px-2 py-1 rounded-[6px] text-[10px] font-600 transition-all opacity-0 group-hover:opacity-100 bg-white/[0.05] text-text-3 hover:bg-white/[0.08] hover:text-text-2"
+                            >
+                              Doctor
+                            </a>
                             {c.status === 'error' && hasCredentials && (
                               <button
                                 onClick={(e) => handleReconnect(e, c)}

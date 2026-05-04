@@ -779,8 +779,42 @@ function writeReflectionMemories(params: {
     { kind: 'open_loop', notes: params.openLoops },
   ]
 
+  // Cross-kind dedup: skip notes whose normalized text we've already stored
+  // this run. The reflection classifier often produces near-identical notes
+  // under multiple kinds (e.g. "successfully completed a multi-step task…"
+  // appearing as both invariant and lesson), which floods memory with noise.
+  const seenNormalized = new Set<string>()
+  const normalizeNote = (note: string): string =>
+    note.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 240)
+
+  // Cross-run dedup: skip notes that already exist as a recent reflection
+  // memory for this agent. Different reflection runs over successive turns
+  // often rediscover the same invariant/lesson because the model re-derives
+  // them from the same pattern. Without this guard the reflection table
+  // grows ~7 entries per test turn; with it, repeat reflections are absorbed.
+  const CROSS_RUN_DEDUP_WINDOW_MS = 7 * 24 * 3600_000 // 7 days
+  const crossRunDedupCutoff = createdAt - CROSS_RUN_DEDUP_WINDOW_MS
+  try {
+    if (params.agentId) {
+      const recent = memoryDb.list(params.agentId, 500)
+      for (const entry of recent) {
+        if (!entry.category || !entry.category.startsWith('reflection/')) continue
+        if ((entry.updatedAt || 0) < crossRunDedupCutoff) continue
+        const norm = normalizeNote(entry.content || '')
+        if (norm) seenNormalized.add(norm)
+      }
+    }
+  } catch {
+    // Memory DB lookup is best-effort — if it fails, fall back to within-run
+    // dedup only rather than blocking the reflection write.
+  }
+
   for (const group of groups) {
     for (const note of group.notes) {
+      const norm = normalizeNote(note)
+      if (!norm) continue
+      if (seenNormalized.has(norm)) continue
+      seenNormalized.add(norm)
       const metadata: Record<string, unknown> = {
         origin: 'autonomy-reflection',
         reflectionId: params.reflectionId,

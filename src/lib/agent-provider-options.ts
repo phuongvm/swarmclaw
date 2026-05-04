@@ -9,6 +9,7 @@ export interface AgentSelectableProvider {
   requiresApiKey: boolean
   optionalApiKey?: boolean
   requiresEndpoint: boolean
+  optionalEndpoint?: boolean
   defaultEndpoint?: string
   credentialId?: string | null
   type: 'builtin' | 'custom'

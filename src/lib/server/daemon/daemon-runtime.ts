@@ -319,33 +319,45 @@ async function main(): Promise<void> {
     })
   }
   process.on('uncaughtException', (err: Error) => {
-    patchDaemonStatusRecord((current) => ({
-      ...current,
-      lastError: err.message,
-      updatedAt: Date.now(),
-    }))
+    try {
+      patchDaemonStatusRecord((current) => ({
+        ...current,
+        lastError: err.message,
+        updatedAt: Date.now(),
+      }))
+    } catch (patchErr) {
+      log.error(TAG, 'Failed to record uncaughtException in daemon status', patchErr)
+    }
     void shutdown('uncaughtException').finally(() => process.exit(1))
   })
   process.on('unhandledRejection', (reason: unknown) => {
-    patchDaemonStatusRecord((current) => ({
-      ...current,
-      lastError: reason instanceof Error ? reason.message : String(reason),
-      updatedAt: Date.now(),
-    }))
+    try {
+      patchDaemonStatusRecord((current) => ({
+        ...current,
+        lastError: reason instanceof Error ? reason.message : String(reason),
+        updatedAt: Date.now(),
+      }))
+    } catch (patchErr) {
+      log.error(TAG, 'Failed to record unhandledRejection in daemon status', patchErr)
+    }
     void shutdown('unhandledRejection').finally(() => process.exit(1))
   })
 }
 
 void main().catch((err: unknown) => {
-  patchDaemonStatusRecord((current) => ({
-    ...current,
-    pid: null,
-    adminPort: null,
-    desiredState: 'stopped',
-    stoppedAt: Date.now(),
-    updatedAt: Date.now(),
-    lastError: err instanceof Error ? err.message : 'Daemon runtime failed to start',
-  }))
+  try {
+    patchDaemonStatusRecord((current) => ({
+      ...current,
+      pid: null,
+      adminPort: null,
+      desiredState: 'stopped',
+      stoppedAt: Date.now(),
+      updatedAt: Date.now(),
+      lastError: err instanceof Error ? err.message : 'Daemon runtime failed to start',
+    }))
+  } catch (patchErr) {
+    log.error(TAG, 'Failed to record fatal daemon error in status', patchErr)
+  }
   clearDaemonAdminMetadata()
   log.error(TAG, 'Fatal daemon runtime error', err)
   process.exit(1)

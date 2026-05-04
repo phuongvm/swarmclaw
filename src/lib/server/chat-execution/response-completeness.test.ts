@@ -78,7 +78,8 @@ describe('response-completeness', () => {
           toolCallCount: 0,
         },
         {
-          generateText: () => new Promise((resolve) => setTimeout(() => resolve('{"isIncomplete": true, "confidence": 0.9}'), 5000)),
+          timeoutMs: 50,
+          generateText: () => new Promise((resolve) => setTimeout(() => resolve('{"isIncomplete": true, "confidence": 0.9}'), 500)),
         },
       )
       assert.equal(result, null)

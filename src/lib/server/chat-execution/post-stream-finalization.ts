@@ -14,36 +14,62 @@ import { extractSuggestions } from '@/lib/server/suggestions'
 import type { StructuredToolInterface } from '@langchain/core/tools'
 import { estimateCost, buildExtensionDefinitionCosts } from '@/lib/server/cost'
 import { appendUsage } from '@/lib/server/usage/usage-repository'
+import { resolveBillingCodesForSession } from '@/lib/server/usage/resolve-billing-codes'
 import { runCapabilityHook } from '@/lib/server/native-capabilities'
 import {
   shouldForceExternalServiceSummary,
 } from '@/lib/server/chat-execution/chat-streaming-utils'
-import type { MessageClassification } from '@/lib/server/chat-execution/message-classifier'
+import {
+  MessageClassificationSchema,
+  type MessageClassification,
+} from '@/lib/server/chat-execution/message-classifier'
 import {
   resolveFinalStreamResponseText,
 } from '@/lib/server/chat-execution/stream-continuation'
 import { buildForcedExternalServiceSummary } from '@/lib/server/chat-execution/prompt-builder'
 
 // ---------------------------------------------------------------------------
-// Classification JSON leak detection — strips `{ "isDeliverableTask": ... }`
-// objects that some models echo verbatim into their response text.
+// Classification JSON leak detection — strips MessageClassification objects
+// that some models echo verbatim into their response text. Candidate JSON
+// substrings are found by brace-matching, then validated against the actual
+// MessageClassificationSchema — the single source of truth for what a
+// classifier object looks like.
 // ---------------------------------------------------------------------------
 
-const CLASSIFICATION_LEAK_RE = /\{\s*"isDeliverableTask"\s*:/
-
-function stripLeakedClassificationJson(text: string): { cleaned: string; stripped: boolean } {
-  const match = CLASSIFICATION_LEAK_RE.exec(text)
-  if (!match || match.index === undefined) return { cleaned: text, stripped: false }
-  const startIdx = match.index
+/** Returns the index just past the balanced `}` for the `{` at `start`, or -1. */
+function findBalancedObjectEnd(text: string, start: number): number {
   let depth = 0
-  let end = -1
-  for (let i = startIdx; i < text.length; i++) {
-    if (text[i] === '{') depth++
-    else if (text[i] === '}') { depth--; if (depth === 0) { end = i + 1; break } }
+  let inString = false
+  let escape = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (escape) { escape = false; continue }
+    if (inString) {
+      if (ch === '\\') escape = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{') depth += 1
+    else if (ch === '}') {
+      depth -= 1
+      if (depth === 0) return i + 1
+    }
   }
-  if (end === -1) return { cleaned: text, stripped: false }
-  log.warn(TAG, 'Stripped leaked classification JSON from model output')
-  return { cleaned: (text.slice(0, startIdx) + text.slice(end)).trimStart(), stripped: true }
+  return -1
+}
+
+export function stripLeakedClassificationJson(text: string): { cleaned: string; stripped: boolean } {
+  for (let i = text.indexOf('{'); i !== -1; i = text.indexOf('{', i + 1)) {
+    const end = findBalancedObjectEnd(text, i)
+    if (end === -1) break
+    let parsed: unknown
+    try { parsed = JSON.parse(text.slice(i, end)) } catch { continue }
+    if (!MessageClassificationSchema.safeParse(parsed).success) continue
+    log.warn(TAG, 'Stripped leaked classification JSON from model output')
+    return { cleaned: (text.slice(0, i) + text.slice(end)).trimStart(), stripped: true }
+  }
+  return { cleaned: text, stripped: false }
 }
 
 // StreamAgentChatResult is defined inline to avoid circular dependency with stream-agent-chat.ts
@@ -192,6 +218,7 @@ export async function finalizeStreamResult(opts: FinalizeStreamResultOpts): Prom
       durationMs: Date.now() - startTs,
       agentId: session.agentId || null,
       projectId: session.projectId || null,
+      billingCodes: resolveBillingCodesForSession(session),
       extensionDefinitionCosts,
       extensionInvocations: state.extensionInvocations.length > 0 ? state.extensionInvocations : undefined,
     }

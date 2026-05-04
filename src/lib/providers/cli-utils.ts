@@ -10,7 +10,9 @@ import os from 'os'
 import { findBinaryOnPath } from '../server/session-tools/context'
 import path from 'path'
 import { spawnSync, type ChildProcess } from 'child_process'
+import { realpathSync } from 'fs'
 import { log } from '../server/logger'
+import { CLI_PROVIDER_METADATA, CLI_PROVIDER_METADATA_BY_ID } from './cli-provider-metadata'
 
 // ---------------------------------------------------------------------------
 // Binary Discovery
@@ -168,6 +170,25 @@ export interface AuthProbeResult {
   errorMessage?: string
 }
 
+export function resolveCodexProbeInvocation(binary: string): { command: string; args: string[] } {
+  try {
+    const resolved = realpathSync(binary)
+    if (resolved.toLowerCase().endsWith('.js')) {
+      return { command: process.execPath, args: [resolved, 'login', 'status'] }
+    }
+  } catch {
+    // Fall through to direct execution when the binary cannot be resolved.
+  }
+
+  return { command: binary, args: ['login', 'status'] }
+}
+
+export function ensureCliWorkingDirectory(cwd?: string | null): string {
+  const resolved = typeof cwd === 'string' && cwd.trim() ? cwd.trim() : process.cwd()
+  fs.mkdirSync(resolved, { recursive: true })
+  return resolved
+}
+
 /**
  * Unified auth check for supported CLI-backed providers.
  */
@@ -198,7 +219,8 @@ export function probeCliAuth(
   }
 
   if (backend === 'codex') {
-    const probe = spawnSync(binary, ['login', 'status'], {
+    const invocation = resolveCodexProbeInvocation(binary)
+    const probe = spawnSync(invocation.command, invocation.args, {
       cwd, env, encoding: 'utf-8', timeout: 8000,
     })
     const probeText = `${probe.stdout || ''}\n${probe.stderr || ''}`.toLowerCase()
@@ -447,19 +469,10 @@ export function symlinkConfigFiles(
 // ---------------------------------------------------------------------------
 
 /** Human-readable descriptions of what each CLI provider excels at. */
-export const CLI_PROVIDER_CAPABILITIES: Record<string, string> = {
-  'claude-cli': 'multi-file code editing, refactoring, debugging, code review',
-  'codex-cli': 'code generation, file creation, automated coding tasks',
-  'opencode-cli': 'code analysis, generation across multiple LLM backends',
-  'gemini-cli': 'code generation, analysis with Gemini models',
-  'copilot-cli': 'code generation, analysis, multi-model support via GitHub Copilot',
-  'droid-cli': 'code generation, refactoring, and automation via Factory Droid with configurable autonomy',
-  'cursor-cli': 'full-agent coding workflows, multi-file edits, project-aware code changes',
-  'qwen-code-cli': 'terminal-native coding workflows, code generation, review, and automation',
-  goose: 'agentic coding workflows with extensions, tools, and runtime-managed execution',
-}
+export const CLI_PROVIDER_CAPABILITIES: Record<string, string> =
+  Object.fromEntries(CLI_PROVIDER_METADATA.map((provider) => [provider.id, provider.capability]))
 
 /** Check if a provider ID is a CLI-based provider. */
 export function isCliProvider(providerId: string): boolean {
-  return providerId in CLI_PROVIDER_CAPABILITIES
+  return providerId in CLI_PROVIDER_METADATA_BY_ID
 }

@@ -143,6 +143,11 @@ export function ChatCard({ session, active, onClick }: Props) {
           />
         )}
         <span className="font-display text-[14px] font-600 truncate flex-1 tracking-[-0.01em]">{displayName}</span>
+        {active && (
+          <span className="shrink-0 text-[9px] font-700 uppercase tracking-[0.08em] text-accent-bright bg-accent-bright/15 px-1.5 py-0.5 rounded-[6px]">
+            Selected
+          </span>
+        )}
         {providerLabel && (
           <span className="shrink-0 text-[10px] font-600 uppercase tracking-wider text-text-3/70 bg-white/[0.03] px-2 py-0.5 rounded-[6px]">
             {providerLabel}

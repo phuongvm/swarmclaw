@@ -153,7 +153,11 @@ export interface EvaluateCompletenessInput {
   toolCallCount: number
 }
 
-const COMPLETENESS_TIMEOUT_MS = 2_000
+const DEFAULT_COMPLETENESS_TIMEOUT_MS = 8_000
+const COMPLETENESS_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.SC_COMPLETENESS_TIMEOUT_MS)
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : DEFAULT_COMPLETENESS_TIMEOUT_MS
+})()
 
 /**
  * Evaluate whether an agent response is incomplete — i.e. the agent described
@@ -164,7 +168,7 @@ const COMPLETENESS_TIMEOUT_MS = 2_000
  */
 export async function evaluateResponseCompleteness(
   input: EvaluateCompletenessInput,
-  options?: { generateText?: (prompt: string) => Promise<string> },
+  options?: { generateText?: (prompt: string) => Promise<string>; timeoutMs?: number },
 ): Promise<ResponseCompleteness | null> {
   const response = input.response.trim()
   if (!response) return null
@@ -174,6 +178,10 @@ export async function evaluateResponseCompleteness(
   if (cached) return cached
 
   const prompt = buildCompletenessPrompt(input.message, response, input.toolCallCount)
+
+  const timeoutMs = typeof options?.timeoutMs === 'number' && options.timeoutMs > 0
+    ? options.timeoutMs
+    : COMPLETENESS_TIMEOUT_MS
 
   const startMs = Date.now()
   try {
@@ -189,7 +197,7 @@ export async function evaluateResponseCompleteness(
             return extractModelText(result.content)
           })(),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('completeness-timeout')), COMPLETENESS_TIMEOUT_MS),
+        setTimeout(() => reject(new Error('completeness-timeout')), timeoutMs),
       ),
     ])
 

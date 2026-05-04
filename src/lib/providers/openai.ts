@@ -166,13 +166,17 @@ export function streamOpenAiChat({ session, message, imagePath, imageUrl, apiKey
               try {
                 const parsed = JSON.parse(data)
                 const choice = parsed.choices?.[0]?.delta
-                const delta = choice?.content
-                  // Thinking/reasoning models (kimi-k2, etc.) put output in reasoning fields
-                  || choice?.reasoning_content
-                  || choice?.reasoning
-                if (delta) {
-                  fullResponse += delta
-                  writeSSE(write, 'd', delta)
+                const contentDelta = typeof choice?.content === 'string' ? choice.content : ''
+                const reasoningDelta =
+                  typeof choice?.reasoning_content === 'string' ? choice.reasoning_content
+                    : typeof choice?.reasoning === 'string' ? choice.reasoning
+                      : ''
+                if (reasoningDelta) {
+                  writeSSE(write, 'thinking', reasoningDelta)
+                }
+                if (contentDelta) {
+                  fullResponse += contentDelta
+                  writeSSE(write, 'd', contentDelta)
                 }
                 // Extract usage from the final chunk (stream_options: include_usage)
                 if (usageEnabled && parsed.usage && onUsage) {

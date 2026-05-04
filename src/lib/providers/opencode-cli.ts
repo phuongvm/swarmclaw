@@ -4,6 +4,8 @@ import { log } from '../server/logger'
 import { loadRuntimeSettings } from '@/lib/server/runtime/runtime-settings'
 import { resolveCliBinary, buildCliEnv, probeCliAuth, attachAbortHandler, isStderrNoise } from './cli-utils'
 
+export const OPENCODE_CLI_STDIO: ['ignore', 'pipe', 'pipe'] = ['ignore', 'pipe', 'pipe']
+
 /**
  * OpenCode CLI provider — spawns `opencode run <message> --format json` for non-interactive usage.
  * Tracks `session.opencodeSessionId` from streamed JSON events to support multi-turn continuity.
@@ -60,7 +62,9 @@ export function streamOpenCodeCliChat({ session, message, imagePath, systemPromp
   const proc = spawn(binary, args, {
     cwd,
     env,
-    stdio: ['pipe', 'pipe', 'pipe'],
+    // stdin must be closed: OpenCode CLI can wait forever on a connected pipe
+    // even when the prompt is passed via argv.
+    stdio: OPENCODE_CLI_STDIO,
     timeout: processTimeoutMs,
   })
 

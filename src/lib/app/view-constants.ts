@@ -11,6 +11,8 @@ export const VIEW_LABELS: Record<AppView, string> = {
   memory: 'Memory',
 
   tasks: 'Tasks',
+  quality: 'Quality',
+  missions: 'Missions',
   secrets: 'Secrets',
   wallets: 'Wallets',
   providers: 'Providers',
@@ -35,6 +37,7 @@ export const CREATE_LABELS: Partial<Record<AppView, string>> = {
   agents: 'Agent',
   schedules: 'Schedule',
   tasks: 'Task',
+  missions: 'Mission',
   secrets: 'Secret',
   providers: 'Provider',
   skills: 'Skill',
@@ -57,6 +60,8 @@ export const VIEW_DESCRIPTIONS: Record<AppView, string> = {
   memory: 'Long-term agent memory store',
 
   tasks: 'Task board for agent work and queued runs',
+  quality: 'Operator quality center for evals, approvals, run review, and release readiness',
+  missions: 'Autonomous goal-driven agent runs with budgets and morning reports',
   secrets: 'API keys, tokens, and encrypted credentials',
   wallets: 'Crypto wallets for agent-initiated on-chain transactions',
   providers: 'LLM providers & custom endpoints',
@@ -114,6 +119,18 @@ export const VIEW_EMPTY_STATES: Record<Exclude<AppView, 'agents' | 'home'>, { ic
     title: 'Task Board',
     description: 'A kanban board for managing agent work. Create tasks, assign them to agents, and track progress.',
     features: ['Kanban columns: Backlog, Queued, Running, Completed, Failed', 'Assign tasks to specific agents', 'Track retries, results, and logs', 'Review status without leaving the board'],
+  },
+  quality: {
+    icon: 'badge-check',
+    title: 'Quality',
+    description: 'Operator center for trusting autonomous agents before, during, and after a release.',
+    features: ['Review run health, failed work, and pending approvals', 'Run scenario and suite evals against selected agents', 'Approve or reject human-loop, tool, connector, and skill requests', 'Inspect replay evidence from recent agent runs'],
+  },
+  missions: {
+    icon: 'target',
+    title: 'Missions',
+    description: 'Hand your agent team a goal and let them run overnight. Budgets, periodic reports, and a full timeline you can review in the morning.',
+    features: ['Set USD, token, turn, and wallclock caps enforced at the session level', 'Periodic markdown reports delivered as in-app notifications', 'Full milestone timeline with evidence and end reasons', 'Start, pause, resume, and cancel from the dashboard or CLI'],
   },
   secrets: {
     icon: 'lock',
@@ -234,5 +251,30 @@ export const VIEW_EMPTY_STATES: Record<Exclude<AppView, 'agents' | 'home'>, { ic
 export const FULL_WIDTH_VIEWS = new Set<AppView>([
   'home', 'org_chart', 'inbox', 'chatrooms', 'protocols', 'schedules', 'secrets', 'wallets', 'providers', 'skills',
   'connectors', 'webhooks', 'mcp_servers', 'knowledge', 'extensions',
-  'usage', 'runs', 'autonomy', 'logs', 'settings', 'activity', 'projects', 'swarmfeed', 'marketplace',
+  'usage', 'runs', 'quality', 'autonomy', 'logs', 'settings', 'activity', 'projects', 'swarmfeed', 'marketplace', 'missions',
 ])
+
+export const PANEL_SIDEBAR_VIEWS = new Set<AppView>([
+  'agents',
+  'connectors',
+  'extensions',
+  'knowledge',
+  'logs',
+  'mcp_servers',
+  'memory',
+  'providers',
+  'runs',
+  'schedules',
+  'secrets',
+  'skills',
+  'tasks',
+  'webhooks',
+])
+
+export function isPanelSidebarView(view: AppView | null | undefined): boolean {
+  return Boolean(view && PANEL_SIDEBAR_VIEWS.has(view))
+}
+
+export function shouldAutoOpenPanelSidebar(view: AppView | null | undefined, isDesktop: boolean): boolean {
+  return isDesktop && isPanelSidebarView(view)
+}

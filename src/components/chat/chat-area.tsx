@@ -6,7 +6,9 @@ import { useAppStore } from '@/stores/use-app-store'
 import { selectActiveSessionId } from '@/stores/slices/session-slice'
 import { useWs } from '@/hooks/use-ws'
 import { useChatStore } from '@/stores/use-chat-store'
-import { fetchMessages, fetchMessagesPaginated, clearMessages, deleteChat, devServer, checkBrowser, stopBrowser } from '@/lib/chat/chats'
+import { fetchMessages, fetchMessagesPaginated, clearMessages, undoClearMessages, deleteChat, devServer, checkBrowser, stopBrowser } from '@/lib/chat/chats'
+import { toast } from 'sonner'
+import { errorMessage } from '@/lib/shared-utils'
 import { uploadImage } from '@/lib/upload'
 import { deleteAgent } from '@/lib/agents'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -29,6 +31,7 @@ import { api } from '@/lib/app/api-client'
 import { messagesDiffer } from '@/lib/chat/chat-streaming-state'
 import { createAssistantRenderId } from '@/lib/chat/assistant-render-id'
 import { getSessionLastMessage } from '@/lib/chat/session-summary'
+import { buildNewAgentSessionPayload, summarizeFirstMessageAsTitle } from '@/lib/chat/new-session'
 import { getEnabledCapabilityIds, getEnabledToolIds } from '@/lib/capability-selection'
 
 const DIRECT_PROMPT_SUGGESTIONS = [
@@ -55,6 +58,8 @@ export function ChatArea() {
   const setCurrentAgent = useAppStore((s) => s.setCurrentAgent)
   const removeSessionFromStore = useAppStore((s) => s.removeSession)
   const refreshSession = useAppStore((s) => s.refreshSession)
+  const updateSessionInStore = useAppStore((s) => s.updateSessionInStore)
+  const setActiveSessionIdOverride = useAppStore((s) => s.setActiveSessionIdOverride)
   const appSettings = useAppStore((s) => s.appSettings)
   const messages = useChatStore((s) => s.messages)
   const messageStartIndex = useChatStore((s) => s.messageStartIndex)
@@ -170,6 +175,7 @@ export function ChatArea() {
   const hasMultipleSources = connectorSources.size > 1 || (connectorSources.size > 0 && hasDirectMessages)
   const [isDragging, setIsDragging] = useState(false)
   const dragCounter = useRef(0)
+  const freshSessionIdRef = useRef<string | null>(null)
   const setPendingImage = useChatStore((s) => s.setPendingImage)
 
   useEffect(() => {
@@ -178,6 +184,13 @@ export function ChatArea() {
     const requestedSessionId = sessionId
     const chatState = useChatStore.getState()
     const preserveLocalStream = chatState.streaming && chatState.streamingSessionId === requestedSessionId
+    if (freshSessionIdRef.current === requestedSessionId) {
+      freshSessionIdRef.current = null
+      setMessages([], { startIndex: 0, totalMessages: 0 })
+      useChatStore.setState({ hasMoreMessages: false })
+      setMessagesLoading(false)
+      return () => { cancelled = true }
+    }
     // Clear stale messages immediately so the skeleton loader shows instead of
     // the previous chat's messages flashing briefly during the fetch.
     if (!preserveLocalStream) setMessages([], { startIndex: 0, totalMessages: 0 })
@@ -429,13 +442,93 @@ export function ChatArea() {
     setDevServer(null)
   }, [sessionId, setDevServer])
 
-  const handleClear = useCallback(async () => {
+  const handleClear = useCallback(async (mode: 'clear' | 'new-session' = 'clear') => {
     setConfirmClear(false)
     if (!sessionId) return
-    await clearMessages(sessionId)
-    setMessages([], { startIndex: 0, totalMessages: 0 })
-    await refreshSession(sessionId)
+    const targetSessionId = sessionId
+    let result
+    try {
+      result = await clearMessages(targetSessionId)
+    } catch (err) {
+      toast.error(`Clear failed: ${errorMessage(err)}`)
+      return
+    }
+    if (selectActiveSessionId(useAppStore.getState()) === targetSessionId) {
+      setMessages([], { startIndex: 0, totalMessages: 0 })
+    }
+    await refreshSession(targetSessionId)
+    const { undoToken, cleared } = result
+    if (!undoToken) return
+    const clearedLabel = mode === 'new-session'
+      ? 'Started a fresh chat session.'
+      : cleared === 1
+        ? '1 message cleared'
+        : `${cleared.toLocaleString()} messages cleared`
+    toast(clearedLabel, {
+      duration: 10_000,
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          try {
+            await undoClearMessages(targetSessionId, undoToken)
+            const restored = await fetchMessages(targetSessionId)
+            if (selectActiveSessionId(useAppStore.getState()) === targetSessionId) {
+              setMessages(restored, { startIndex: 0, totalMessages: restored.length })
+            }
+            await refreshSession(targetSessionId)
+            toast.success('Chat restored.')
+          } catch (err) {
+            toast.error(`Undo failed: ${errorMessage(err)}`)
+          }
+        },
+      },
+    })
   }, [refreshSession, sessionId, setMessages])
+
+  const handleCompactComplete = useCallback(async () => {
+    if (!sessionId) return
+    const targetSessionId = sessionId
+    try {
+      const refreshed = await fetchMessages(targetSessionId)
+      if (selectActiveSessionId(useAppStore.getState()) === targetSessionId) {
+        setMessages(refreshed, { startIndex: 0, totalMessages: refreshed.length })
+      }
+    } catch {
+      // silent — next poll will catch up
+    }
+  }, [sessionId, setMessages])
+
+  const handleClearRequest = useCallback(() => {
+    setConfirmClear(true)
+  }, [])
+
+  const handleStartNewSession = useCallback(async () => {
+    if (!session) return
+    try {
+      const nextSession = await api<typeof session>('POST', '/chats', {
+        ...buildNewAgentSessionPayload(session),
+        name: currentAgent?.name || session.name,
+      })
+      freshSessionIdRef.current = nextSession.id
+      updateSessionInStore(nextSession)
+      setActiveSessionIdOverride(nextSession.id)
+      toast.success('Started a new chat session.')
+    } catch (err) {
+      toast.error(`Could not start a new chat session: ${errorMessage(err)}`)
+    }
+  }, [currentAgent?.name, session, setActiveSessionIdOverride, updateSessionInStore])
+
+  const handleSend = useCallback(async (text: string) => {
+    if (!sessionId) return
+    if (session && messages.length === 0) {
+      const nextTitle = summarizeFirstMessageAsTitle(text, currentAgent?.name || session.name)
+      if (nextTitle && nextTitle !== session.name) {
+        updateSessionInStore({ ...session, name: nextTitle })
+        void api('PUT', `/chats/${sessionId}`, { name: nextTitle }).catch(() => {})
+      }
+    }
+    await sendMessage(text, { sessionId })
+  }, [currentAgent?.name, messages.length, sendMessage, session, sessionId, updateSessionInStore])
 
   const handleDelete = useCallback(async () => {
     setConfirmDelete(false)
@@ -446,8 +539,8 @@ export function ChatArea() {
   }, [removeSessionFromStore, sessionId, setCurrentAgent])
 
   const handlePrompt = useCallback((text: string) => {
-    sendMessage(text)
-  }, [sendMessage])
+    void handleSend(text)
+  }, [handleSend])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -515,6 +608,10 @@ export function ChatArea() {
           connectorFilter={connectorFilter}
           onConnectorFilterChange={setConnectorFilter}
           hasMultipleSources={hasMultipleSources}
+          messageCount={messages.length}
+          onCompactComplete={handleCompactComplete}
+          onClearRequest={handleClearRequest}
+          onStartNewSession={handleStartNewSession}
         />
       )}
       {!isDesktop && (
@@ -533,6 +630,10 @@ export function ChatArea() {
           connectorFilter={connectorFilter}
           onConnectorFilterChange={setConnectorFilter}
           hasMultipleSources={hasMultipleSources}
+          messageCount={messages.length}
+          onCompactComplete={handleCompactComplete}
+          onClearRequest={handleClearRequest}
+          onStartNewSession={handleStartNewSession}
         />
       )}
       <DevServerBar status={devServerStatus} onStop={handleStopDevServer} />
@@ -635,13 +736,13 @@ export function ChatArea() {
         onClose={() => setDebugOpen(false)}
       />
 
-      <ChatInput
-        streaming={streamingForThisSession}
-        busy={streamingForThisSession || session.active === true}
-        onSend={sendMessage}
-        onStop={stopStreaming}
-        extensionChatActions={extensionChatActions}
-      />
+        <ChatInput
+          streaming={streamingForThisSession}
+          busy={streamingForThisSession || session.active === true}
+          onSend={handleSend}
+          onStop={stopStreaming}
+          extensionChatActions={extensionChatActions}
+        />
 
       <Dropdown open={menuOpen} onClose={() => setMenuOpen(false)}>
         <DropdownItem onClick={() => {
@@ -660,11 +761,11 @@ export function ChatArea() {
 
       <ConfirmDialog
         open={confirmClear}
-        title="Clear History"
-        message="This will delete all messages in this chat. This cannot be undone."
+        title="Clear chat"
+        message="Clear every message in this chat. Long-term memory, skills, and facts are preserved. You'll have 10 seconds to undo."
         confirmLabel="Clear"
         danger
-        onConfirm={handleClear}
+        onConfirm={() => { void handleClear('clear') }}
         onCancel={() => setConfirmClear(false)}
       />
       <ConfirmDialog

@@ -12,7 +12,7 @@ import { toast } from 'sonner'
 import { ModelCombobox } from '@/components/shared/model-combobox'
 import type { ProviderType, ClaudeSkill, AgentPackManifest, AgentRoutingStrategy, AgentRoutingTarget } from '@/types'
 import { AVAILABLE_TOOLS, PLATFORM_TOOLS } from '@/lib/tool-definitions'
-import { NATIVE_CAPABILITY_PROVIDER_IDS, NON_LANGGRAPH_PROVIDER_IDS, WORKER_ONLY_PROVIDER_IDS } from '@/lib/provider-sets'
+import { MCP_INJECTION_PROVIDER_IDS, NATIVE_CAPABILITY_PROVIDER_IDS, NON_LANGGRAPH_PROVIDER_IDS, WORKER_ONLY_PROVIDER_IDS } from '@/lib/provider-sets'
 import { isOrchestratorProviderEligible } from '@/lib/orchestrator-config'
 import { AgentAvatar } from './agent-avatar'
 import { AgentPickerList } from '@/components/shared/agent-picker-list'
@@ -179,6 +179,7 @@ export function AgentSheet() {
   const dynamicSkills = useAppStore((s) => s.skills)
   const mcpServers = useAppStore((s) => s.mcpServers)
   const loadSkills = useAppStore((s) => s.loadSkills)
+  const loadMcpServersAction = useAppStore((s) => s.loadMcpServers)
   const [claudeSkills, setClaudeSkills] = useState<ClaudeSkill[]>([])
   const [claudeSkillsLoading, setClaudeSkillsLoading] = useState(false)
   const loadClaudeSkills = async () => {
@@ -210,6 +211,11 @@ export function AgentSheet() {
   const [delegationTargetMode, setDelegationTargetMode] = useState<'all' | 'selected'>('all')
   const [delegationTargetAgentIds, setDelegationTargetAgentIds] = useState<string[]>([])
   const [tools, setTools] = useState<string[]>([])
+  // Scoped tool access is the default for new agents (cuts ~3 k input tokens
+  // per turn). Existing agents with no toolAccessMode field persisted stay
+  // universal server-side for backward compat; the new-agent setup path
+  // below also explicitly writes 'scoped' so it persists on save.
+  const [toolAccessMode, setToolAccessMode] = useState<'universal' | 'scoped'>('scoped')
   const [extensions, setExtensions] = useState<string[]>([])
   const [enabledExtensionIds, setEnabledExtensionIds] = useState<Set<string> | null>(null)
   const [skills, setSkills] = useState<string[]>([])
@@ -385,6 +391,7 @@ export function AgentSheet() {
       loadGatewayProfiles()
       loadCredentials()
       loadSkills()
+      loadMcpServersAction()
       loadProjects()
       loadClaudeSkills()
       // Fetch enabled extension IDs so we can filter tool toggles
@@ -415,6 +422,7 @@ export function AgentSheet() {
         setDelegationTargetMode(editing.delegationTargetMode === 'selected' ? 'selected' : 'all')
         setDelegationTargetAgentIds(editing.delegationTargetAgentIds || [])
         setTools(getEnabledToolIds(editing))
+        setToolAccessMode(editing.toolAccessMode === 'scoped' ? 'scoped' : 'universal')
         setExtensions(getEnabledExtensionIds(editing))
         setSkills(editing.skills || [])
         setSkillIds(editing.skillIds || [])
@@ -497,6 +505,7 @@ export function AgentSheet() {
         setDelegationTargetMode(src.delegationTargetMode === 'selected' ? 'selected' : 'all')
         setDelegationTargetAgentIds(src.delegationTargetAgentIds || [])
         setTools(getEnabledToolIds(src))
+        setToolAccessMode(src.toolAccessMode === 'scoped' ? 'scoped' : 'universal')
         setExtensions(getEnabledExtensionIds(src))
         setSkills(src.skills || [])
         setSkillIds(src.skillIds || [])
@@ -576,6 +585,7 @@ export function AgentSheet() {
         setDelegationTargetMode('all')
         setDelegationTargetAgentIds([])
         setTools(getDefaultAgentToolIds())
+        setToolAccessMode('scoped')
         setExtensions([])
         setSkills([])
         setSkillIds([])
@@ -783,6 +793,7 @@ export function AgentSheet() {
       delegationTargetMode: delegationEnabled || role === 'coordinator' ? delegationTargetMode : 'all',
       delegationTargetAgentIds: (delegationEnabled || role === 'coordinator') && delegationTargetMode === 'selected' ? delegationTargetAgentIds : [],
       tools,
+      toolAccessMode,
       extensions,
       skills,
       skillIds,
@@ -1647,7 +1658,7 @@ export function AgentSheet() {
         </div>
       )}
 
-      {currentProvider?.requiresEndpoint && (provider !== 'ollama' || ollamaMode === 'local') && (
+      {(currentProvider?.requiresEndpoint || currentProvider?.optionalEndpoint) && (provider !== 'ollama' || ollamaMode === 'local') && (
         <div className="mb-8">
           <SectionLabel>{provider === 'openclaw' ? 'OpenClaw Endpoint' : provider === 'hermes' ? 'Hermes API Endpoint' : 'Endpoint'}</SectionLabel>
           <input type="text" value={apiEndpoint || ''} onChange={(e) => setApiEndpoint(e.target.value || null)} placeholder={currentProvider.defaultEndpoint || 'http://localhost:11434'} className={`${inputClass} font-mono text-[14px]`} />
@@ -1998,13 +2009,38 @@ export function AgentSheet() {
         </SectionCard>
       )}
 
-      {!WORKER_ONLY_PROVIDER_IDS.has(provider) && (
+      {(!WORKER_ONLY_PROVIDER_IDS.has(provider) || MCP_INJECTION_PROVIDER_IDS.has(provider)) && (
       <AdvancedSettingsSection
         open={showAdvancedSettings}
         onToggle={() => setShowAdvancedSettings((current) => !current)}
         summary={advancedSummary}
         badges={agentAdvancedBadges}
       >
+      {!WORKER_ONLY_PROVIDER_IDS.has(provider) && (<>
+      <SectionCard
+        title="Context & Tool Access"
+        description="Control how many tools are described in this agent's system prompt. Scoped (default) keeps the agent focused and saves ~3 k input tokens per turn; Universal gives it visibility into every built-in tool."
+        className="mb-6 border-white/[0.05] bg-white/[0.01]"
+      >
+      <div className="space-y-3">
+        <label className="flex items-center gap-3 cursor-pointer">
+          <div
+            onClick={() => setToolAccessMode((current) => current === 'universal' ? 'scoped' : 'universal')}
+            className={`w-11 h-6 rounded-full transition-all duration-200 relative cursor-pointer shrink-0 ${toolAccessMode === 'universal' ? 'bg-accent-bright' : 'bg-white/[0.08]'}`}
+          >
+            <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all duration-200 ${toolAccessMode === 'universal' ? 'left-[22px]' : 'left-0.5'}`} />
+          </div>
+          <span className="text-[13px] text-text-2">Universal tool access</span>
+          <HintTip text="Off (default, recommended): the agent only sees tools enabled in its Tools list. On: every built-in tool is described in the system prompt. Turn on only for coordinator agents that need visibility across every possible downstream tool, or temporarily for debugging." />
+        </label>
+        <p className="text-[12px] text-text-3/70 pl-[56px] -mt-1">
+          {toolAccessMode === 'universal'
+            ? 'Full tool universe is injected into the prompt. Costs ~3 k more input tokens per turn.'
+            : 'Only the tools enabled above are visible to the agent — this is the focused default.'}
+        </p>
+      </div>
+      </SectionCard>
+
       <SectionCard
         title="Voice & Autonomy"
         description="Tune voice and the detailed heartbeat behavior for this agent."
@@ -2417,6 +2453,7 @@ export function AgentSheet() {
         </div>
       )}
       </SectionCard>
+      </>)}
 
       <SectionCard
         title="Tools & Skills"
@@ -2506,13 +2543,13 @@ export function AgentSheet() {
             {provider === 'claude-cli'
               ? 'Claude CLI uses its own built-in capabilities — no additional local tool/platform configuration is needed.'
               : provider === 'codex-cli'
-                ? 'OpenAI Codex CLI uses its own built-in tools (shell, files, etc.) — no additional local tool configuration is needed.'
+                ? 'OpenAI Codex CLI uses its own built-in tools (shell, files, etc.). Skills and MCP servers assigned below will be injected at runtime.'
                 : provider === 'opencode-cli'
                   ? 'OpenCode CLI uses its own built-in tools (shell, files, etc.) — no additional local tool configuration is needed.'
                   : provider === 'gemini-cli'
                     ? 'Gemini CLI uses its own built-in tools and runtime — SwarmClaw does not inject local platform tools for it.'
                     : provider === 'copilot-cli'
-                      ? 'GitHub Copilot CLI uses its own built-in tools and runtime — SwarmClaw does not inject local platform tools for it.'
+                      ? 'GitHub Copilot CLI uses its own built-in tools and runtime. Skills and MCP servers assigned below will be injected at runtime.'
                       : provider === 'droid-cli'
                         ? 'Factory Droid CLI uses its own built-in tools and autonomy controls — SwarmClaw does not inject local platform tools for it.'
                         : provider === 'cursor-cli'

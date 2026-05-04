@@ -16,6 +16,23 @@ interface TaskCompletionValidationOptions {
 const MIN_RESULT_CHARS_IMPLEMENTATION = 40
 const MIN_RESULT_CHARS_GENERIC = 20
 
+const SHORT_ANSWER_REQUEST_PATTERNS: RegExp[] = [
+  /\bone[\s-]word\b/i,
+  /\bsingle[\s-]word\b/i,
+  /\byes\s+or\s+no\b/i,
+  /\bin\s+(?:a\s+)?single\s+(?:word|line|sentence)\b/i,
+  /\bin\s+\d+\s+(?:word|words|chars?|characters?)\b/i,
+  /\breply\s+with\s+(?:the\s+(?:word|number|letter|character|string)\s+)?["'`]?[\w-]{1,40}["'`]?\s+only\b/i,
+  /\brespond\s+with\s+(?:the\s+(?:word|number|letter|character|string)\s+)?["'`]?[\w-]{1,40}["'`]?\s+only\b/i,
+  /\b(?:answer|reply|respond)\s+(?:with\s+)?["'`][^"'`]{1,40}["'`]\s+only\b/i,
+  /\bjust\s+(?:say|reply|return|output|answer)\b/i,
+]
+
+function promptRequestsShortAnswer(text: string): boolean {
+  if (!text) return false
+  return SHORT_ANSWER_REQUEST_PATTERNS.some((rx) => rx.test(text))
+}
+
 const WEAK_RESULT_PATTERNS: RegExp[] = [
   /what can i help you with/i,
   /waiting for approval/i,
@@ -75,8 +92,10 @@ export function validateTaskCompletion(
     reasons.push('Task metadata is too vague (untitled title with empty description).')
   }
 
+  const shortAnswerRequested = promptRequestsShortAnswer(`${title} ${description}`)
+
   if (!result) reasons.push('Result summary is empty.')
-  else {
+  else if (!shortAnswerRequested) {
     const minChars = implementationTask ? MIN_RESULT_CHARS_IMPLEMENTATION : MIN_RESULT_CHARS_GENERIC
     if (result.length < minChars) reasons.push(`Result summary is too short (${result.length} chars; min ${minChars}).`)
     if (WEAK_RESULT_PATTERNS.some((rx) => rx.test(result))) {
@@ -97,7 +116,7 @@ export function validateTaskCompletion(
       && (/\b(command|test|lint|typecheck|build|file|artifact)\b/i.test(result) || FILE_PATH_EVIDENCE_HINT.test(result)))
   )
   const hasReportEvidence = report?.evidence.hasEvidence === true
-  if (implementationTask && !hasResultEvidence && !hasReportEvidence) {
+  if (implementationTask && !shortAnswerRequested && !hasResultEvidence && !hasReportEvidence) {
     if (report?.relativePath) {
       reasons.push(`Implementation task is missing concrete execution evidence in result or ${report.relativePath}.`)
     } else {

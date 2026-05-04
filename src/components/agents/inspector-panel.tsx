@@ -4,6 +4,7 @@ import { DEFAULT_HEARTBEAT_INTERVAL_SEC } from '@/lib/runtime/heartbeat-defaults
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Agent, MemoryEntry, Session } from '@/types'
 import { useAppStore } from '@/stores/use-app-store'
+import { selectActiveSessionId } from '@/stores/slices/session-slice'
 import { useChatStore } from '@/stores/use-chat-store'
 import { api } from '@/lib/app/api-client'
 import { AgentAvatar } from './agent-avatar'
@@ -73,22 +74,24 @@ function ModelSwitcherInline({ session, agent }: { session: Session; agent: Agen
   const refreshSession = useAppStore((s) => s.refreshSession)
   const streaming = useChatStore((s) => s.streaming)
   const [expanded, setExpanded] = useState(false)
-  const [selectedProvider, setSelectedProvider] = useState(agent.provider)
+  const [selectedProvider, setSelectedProvider] = useState(session.provider || agent.provider)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     void loadProviders()
     void loadProviderConfigs()
   }, [loadProviderConfigs, loadProviders])
-  useEffect(() => { setSelectedProvider(agent.provider) }, [agent.provider])
+  // Sync selectedProvider when the session's provider changes (e.g. after a successful save)
+  useEffect(() => { setSelectedProvider(session.provider || agent.provider) }, [session.provider, agent.provider])
 
   const agentSelectableProviders = useMemo(
     () => buildAgentSelectableProviders(providers, providerConfigs),
     [providerConfigs, providers],
   )
   const currentProviderInfo = agentSelectableProviders.find((p) => p.id === selectedProvider)
-  const activeAgentProvider = agentSelectableProviders.find((p) => p.id === agent.provider)
-  const providerLabel = PROVIDER_LABELS[agent.provider] || activeAgentProvider?.name || agent.provider.replace(/-/g, ' ')
+  const activeSessionProvider = agentSelectableProviders.find((p) => p.id === (session.provider || agent.provider))
+  const effectiveProvider = session.provider || agent.provider
+  const providerLabel = PROVIDER_LABELS[effectiveProvider] || activeSessionProvider?.name || effectiveProvider.replace(/-/g, ' ')
 
   const handleModelChange = async (model: string) => {
     if (saving) return
@@ -117,7 +120,7 @@ function ModelSwitcherInline({ session, agent }: { session: Session; agent: Agen
           {providerLabel}
         </span>
         <span className="inline-flex max-w-[180px] items-center rounded-[8px] border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[10px] font-mono text-text-3/70 truncate group-hover:border-white/[0.1] group-hover:text-text-2 transition-colors">
-          {agent.model || 'Default model'}
+          {session.model || agent.model || 'Default model'}
         </span>
         <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="text-text-3/30 group-hover:text-text-3/60 transition-colors ml-auto shrink-0">
           <polyline points="6 9 12 15 18 9" />
@@ -157,7 +160,7 @@ function ModelSwitcherInline({ session, agent }: { session: Session; agent: Agen
       {currentProviderInfo && (
         <ModelCombobox
           providerId={currentProviderInfo.id}
-          value={agent.model || currentProviderInfo.models[0] || ''}
+          value={session.model || agent.model || currentProviderInfo.models[0] || ''}
           onChange={(m) => void handleModelChange(m)}
           models={currentProviderInfo.models}
           defaultModels={currentProviderInfo.defaultModels}
@@ -898,12 +901,27 @@ function QuickActionsSection({ agent, session }: { agent: Agent; session: Sessio
 
 function SessionsSection({ agent }: { agent: Agent }) {
   const sessions = useAppStore((s) => s.sessions)
+  const activeSessionId = useAppStore(selectActiveSessionId)
   const connectors = useAppStore((s) => s.connectors)
   const agents = useAppStore((s) => s.agents)
   const setCurrentAgent = useAppStore((s) => s.setCurrentAgent)
+  const setActiveSessionIdOverride = useAppStore((s) => s.setActiveSessionIdOverride)
+  const setInspectorOpen = useAppStore((s) => s.setInspectorOpen)
 
   const agentSessions = useMemo(() => {
-    return Object.values(sessions).filter((s) => s.agentId === agent.id)
+    const getLastMessageTime = (session: Session): number => {
+      const summaryTime = session.lastMessageSummary?.time
+      if (typeof summaryTime === 'number' && Number.isFinite(summaryTime)) return summaryTime
+      if (Array.isArray(session.messages) && session.messages.length > 0) {
+        const last = session.messages[session.messages.length - 1]
+        if (typeof last?.time === 'number' && Number.isFinite(last.time)) return last.time
+      }
+      return session.lastActiveAt || session.createdAt || 0
+    }
+
+    return Object.values(sessions)
+      .filter((s) => s.agentId === agent.id)
+      .sort((left, right) => getLastMessageTime(right) - getLastMessageTime(left))
   }, [sessions, agent.id])
 
   if (agentSessions.length === 0) return null
@@ -913,6 +931,7 @@ function SessionsSection({ agent }: { agent: Agent }) {
       <SectionLabel>Sessions ({agentSessions.length})</SectionLabel>
       <div className="flex flex-col gap-1.5">
         {agentSessions.map((s) => {
+          const isSelected = s.id === activeSessionId
           const connector = getSessionConnector(s, connectors)
           const delegatedByAgentId = (s as unknown as Record<string, unknown>).delegatedByAgentId as string | undefined
           const delegatedBy = delegatedByAgentId ? agents[delegatedByAgentId] : null
@@ -920,8 +939,19 @@ function SessionsSection({ agent }: { agent: Agent }) {
             <button
               key={s.id}
               type="button"
-              onClick={() => void setCurrentAgent(agent.id)}
-              className="flex items-center gap-2 w-full py-1.5 px-2 rounded-[8px] bg-transparent border-none cursor-pointer hover:bg-white/[0.04] transition-colors text-left"
+              onClick={() => {
+                void setCurrentAgent(agent.id).then(() => {
+                  setActiveSessionIdOverride(s.id)
+                  setInspectorOpen(false)
+                  if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('swarmclaw:scroll-bottom'))
+                  }
+                }).catch(() => {})
+              }}
+              className={`flex items-center gap-2 w-full py-1.5 px-2 rounded-[8px] border-none cursor-pointer transition-colors text-left
+                ${isSelected
+                  ? 'bg-accent-soft/70 ring-1 ring-accent-bright/25'
+                  : 'bg-transparent hover:bg-white/[0.04]'}`}
             >
               {connector ? (
                 <ConnectorPlatformIcon platform={connector.platform} size={14} />
@@ -931,6 +961,11 @@ function SessionsSection({ agent }: { agent: Agent }) {
                 </svg>
               )}
               <span className="text-[12px] text-text-2 truncate flex-1">{s.name}</span>
+              {isSelected && (
+                <span className="text-[9px] font-700 uppercase tracking-[0.08em] text-accent-bright bg-accent-bright/15 px-1.5 py-0.5 rounded-[6px] shrink-0">
+                  Selected
+                </span>
+              )}
               {delegatedBy && (
                 <span className="text-[9px] text-amber-300/60 font-600 shrink-0">from {delegatedBy.name}</span>
               )}

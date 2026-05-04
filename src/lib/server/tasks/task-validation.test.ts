@@ -104,6 +104,36 @@ test('validateTaskCompletion enforces explicit quality gate evidence requirement
   assert.ok(validation.reasons.some((reason) => reason.includes('artifact evidence is required')))
 })
 
+test('validateTaskCompletion accepts short replies when prompt explicitly asks for one', () => {
+  const cases = [
+    { description: 'Reply with the word PONG only.', result: 'PONG' },
+    { description: 'Answer in one word.', result: 'Yes' },
+    { description: 'Yes or no: is it raining?', result: 'No' },
+    { description: 'Just say hi.', result: 'hi' },
+    { description: 'Respond with the number 42 only.', result: '42' },
+  ]
+  for (const c of cases) {
+    const validation = validateTaskCompletion({
+      title: 'Ping',
+      description: c.description,
+      result: c.result,
+      error: null,
+    } as Partial<BoardTask>)
+    assert.equal(validation.ok, true, `expected ok for "${c.description}" -> "${c.result}", got: ${validation.reasons.join('; ')}`)
+  }
+})
+
+test('validateTaskCompletion still rejects short generic replies when no short-answer signal in prompt', () => {
+  const validation = validateTaskCompletion({
+    title: 'Summarize the project',
+    description: 'Give an overview of the codebase.',
+    result: 'Done.',
+    error: null,
+  } as Partial<BoardTask>)
+  assert.equal(validation.ok, false)
+  assert.ok(validation.reasons.some((r) => r.includes('Result summary is too short')))
+})
+
 test('validateTaskCompletion passes explicit quality gate when evidence checks are met', () => {
   const validation = validateTaskCompletion({
     title: 'Ship API migration summary',

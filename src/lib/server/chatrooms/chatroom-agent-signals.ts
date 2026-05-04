@@ -1,6 +1,83 @@
+import { z } from 'zod'
 import type { Chatroom, Agent } from '@/types'
 import { patchChatroom } from '@/lib/server/chatrooms/chatroom-repository'
 import { notify } from '@/lib/server/ws-hub'
+
+const REACTION_MARKER = '[REACTION]'
+
+const ReactionPayloadSchema = z.object({
+  emoji: z.string().min(1),
+  to: z.string().min(1),
+}).passthrough()
+type ReactionPayload = z.infer<typeof ReactionPayloadSchema>
+
+interface ReactionMatch {
+  start: number
+  end: number
+  payload: ReactionPayload
+}
+
+function findBalancedJsonObjectEnd(text: string, start: number): number {
+  if (text.charAt(start) !== '{') return -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i += 1) {
+    const c = text.charAt(i)
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === '\\') escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') {
+      inString = true
+      continue
+    }
+    if (c === '{') depth += 1
+    else if (c === '}') {
+      depth -= 1
+      if (depth === 0) return i + 1
+    }
+  }
+  return -1
+}
+
+function findReactionMatches(text: string): ReactionMatch[] {
+  const matches: ReactionMatch[] = []
+  if (!text) return matches
+  let cursor = 0
+  while (cursor < text.length) {
+    const markerAt = text.indexOf(REACTION_MARKER, cursor)
+    if (markerAt < 0) break
+    let jsonStart = markerAt + REACTION_MARKER.length
+    while (jsonStart < text.length && /\s/.test(text.charAt(jsonStart))) jsonStart += 1
+    if (text.charAt(jsonStart) !== '{') {
+      cursor = markerAt + REACTION_MARKER.length
+      continue
+    }
+    const jsonEnd = findBalancedJsonObjectEnd(text, jsonStart)
+    if (jsonEnd <= jsonStart) {
+      cursor = markerAt + REACTION_MARKER.length
+      continue
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text.slice(jsonStart, jsonEnd))
+    } catch {
+      cursor = jsonStart + 1
+      continue
+    }
+    const validated = ReactionPayloadSchema.safeParse(parsed)
+    if (!validated.success) {
+      cursor = jsonEnd
+      continue
+    }
+    matches.push({ start: markerAt, end: jsonEnd, payload: validated.data })
+    cursor = jsonEnd
+  }
+  return matches
+}
 
 /**
  * Normalizes text for comparison (lowercase, alphanumeric only)
@@ -67,16 +144,35 @@ export function addAgentReaction(chatroomId: string, messageId: string, agentId:
 /**
  * Parses [REACTION] tokens from agent output and applies them.
  * Format: [REACTION]{"emoji": "👍", "to": "msg_id"}
+ *
+ * Uses a balanced-brace walker + zod validation so nested JSON or noisy
+ * payloads don't slip past, and so unrelated `[REACTION]something` text
+ * doesn't get spuriously consumed.
  */
 export function applyAgentReactionsFromText(text: string, chatroomId: string, agentId: string) {
-  const reactionRegex = /\[REACTION\]\s*(\{.*?\})/g
-  let match
-  while ((match = reactionRegex.exec(text)) !== null) {
-    try {
-      const data = JSON.parse(match[1])
-      if (data.emoji && data.to) {
-        addAgentReaction(chatroomId, data.to, agentId, data.emoji)
-      }
-    } catch { /* ignore invalid JSON */ }
+  for (const match of findReactionMatches(text)) {
+    addAgentReaction(chatroomId, match.payload.to, agentId, match.payload.emoji)
   }
+}
+
+/**
+ * Removes [REACTION]{...} markers from agent output so they don't bleed into
+ * the visible message body. Reactions are persisted separately by
+ * applyAgentReactionsFromText.
+ */
+export function stripAgentReactionTokens(text: string): string {
+  if (!text) return text
+  const matches = findReactionMatches(text)
+  if (matches.length === 0) return text
+  let out = ''
+  let cursor = 0
+  for (const match of matches) {
+    out += text.slice(cursor, match.start)
+    cursor = match.end
+  }
+  out += text.slice(cursor)
+  return out
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }

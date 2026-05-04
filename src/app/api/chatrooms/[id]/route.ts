@@ -4,11 +4,11 @@ import { notify } from '@/lib/server/ws-hub'
 import { notFound } from '@/lib/server/collection-helpers'
 import { safeParseBody } from '@/lib/server/safe-parse-body'
 import { genId } from '@/lib/id'
-import { isWorkerOnlyAgent } from '@/lib/server/agents/agent-availability'
 import {
   ensureChatroomRoutingGuidance,
   synthesizeRoutingGuidanceFromRules,
 } from '@/lib/server/chatrooms/chatroom-routing'
+import { ChatroomUpdateSchema, formatZodError } from '@/lib/validation/schemas'
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -25,14 +25,23 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const { data: body, error } = await safeParseBody<Record<string, unknown>>(req)
+  const { data: raw, error } = await safeParseBody<Record<string, unknown>>(req)
   if (error) return error
+  const parsed = ChatroomUpdateSchema.safeParse(raw)
+  if (!parsed.success) return NextResponse.json(formatZodError(parsed.error), { status: 400 })
+
+  const rawKeys = new Set(Object.keys(raw ?? {}))
+  const body: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(parsed.data)) {
+    if (rawKeys.has(key)) body[key] = value
+  }
+
   const chatrooms = loadChatrooms()
   const chatroom = chatrooms[id]
   if (!chatroom) return notFound()
 
-  if (body.name !== undefined) chatroom.name = body.name
-  if (body.description !== undefined) chatroom.description = body.description
+  if (body.name !== undefined) chatroom.name = body.name as string
+  if (body.description !== undefined) chatroom.description = body.description as string
   if (body.chatMode !== undefined) {
     chatroom.chatMode = body.chatMode === 'parallel' ? 'parallel' : 'sequential'
   }
@@ -68,16 +77,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         { status: 400 },
       )
     }
-    const cliAgentNames = agentIds
-      .filter((agentId) => isWorkerOnlyAgent(agents[agentId]))
-      .map((agentId) => agents[agentId]?.name || agentId)
-    if (cliAgentNames.length > 0) {
-      return NextResponse.json(
-        { error: `CLI-based agents cannot join chatrooms: ${cliAgentNames.join(', ')}. They can only be used for direct chats and delegation.` },
-        { status: 400 },
-      )
-    }
-
     const oldIds = new Set(chatroom.agentIds)
     const newIds = new Set(agentIds)
     const added = agentIds.filter((aid: string) => !oldIds.has(aid))

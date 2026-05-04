@@ -25,13 +25,25 @@ import type {
 } from '@/lib/server/daemon/types'
 import { DATA_DIR } from '@/lib/server/data-dir'
 import { loadEstopState } from '@/lib/server/runtime/estop'
-import { getDaemonStatus } from '@/lib/server/runtime/daemon-state/core'
+import {
+  getDaemonHealthSummary,
+  getDaemonStatus,
+  startDaemon,
+  stopDaemon,
+} from '@/lib/server/runtime/daemon-state/core'
 import { daemonAutostartEnvEnabled } from '@/lib/server/runtime/daemon-policy'
 import {
   releaseRuntimeLock,
   tryAcquireRuntimeLock,
 } from '@/lib/server/runtime/runtime-lock-repository'
-import { errorMessage } from '@/lib/shared-utils'
+import { errorMessage, hmrSingleton } from '@/lib/shared-utils'
+
+// HMR-safe single-shot guard so the "subprocess fallback unavailable"
+// warning logs once per process lifetime, not per API call.
+const subprocessFallbackUnavailableLogged = hmrSingleton<{ value: boolean }>(
+  '__swarmclaw_daemon_subprocess_fallback_warned__',
+  () => ({ value: false }),
+)
 
 const TAG = 'daemon-controller'
 const LAUNCH_LOCK_NAME = 'daemon-launcher'
@@ -157,6 +169,15 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
 type DaemonSnapshotResponse = {
   status: DaemonStatusPayload
   healthSummary: DaemonHealthSummaryPayload
+}
+
+function getInProcessDaemonSnapshot(): DaemonSnapshotResponse | null {
+  const status = getDaemonStatus()
+  if (!status.running) return null
+  return {
+    status,
+    healthSummary: getDaemonHealthSummary() as DaemonHealthSummaryPayload,
+  }
 }
 
 async function requestDaemon<T>(
@@ -345,17 +366,18 @@ export async function ensureDaemonProcessRunning(
   source: string,
   opts?: { manualStart?: boolean },
 ): Promise<boolean> {
-  // In dev mode, the daemon may already be running in-process (same Next.js server)
-  // without a daemon-admin.json file. Check in-process state first to avoid spawning
-  // a subprocess that fails to acquire the already-held lease.
-  const inProcessStatus = getDaemonStatus()
-  if (inProcessStatus.running) return false
-
   const manualStart = opts?.manualStart === true
   const record = loadDaemonStatusRecord()
   if (loadEstopState().level !== 'none') return false
   if (!manualStart && !daemonAutostartEnvEnabled()) return false
   if (!manualStart && record.manualStopRequested) return false
+
+  const inProcessSnapshot = getInProcessDaemonSnapshot()
+  if (inProcessSnapshot) return false
+
+  const startedInProcess = startDaemon({ source, manualStart })
+  if (startedInProcess) return true
+  if (getInProcessDaemonSnapshot()) return false
 
   const live = await getLiveDaemonSnapshot()
   if (live?.status.running) return false
@@ -367,7 +389,22 @@ export async function ensureDaemonProcessRunning(
     const secondCheck = await getLiveDaemonSnapshot()
     if (secondCheck?.status.running) return false
 
-    const { root, entry } = resolveDaemonRuntimeEntry()
+    let resolved: { root: string; entry: string }
+    try {
+      resolved = resolveDaemonRuntimeEntry()
+    } catch (err: unknown) {
+      // The standalone Docker image does not ship `src/` (Next.js standalone
+      // output excludes raw source files), so the subprocess fallback can
+      // never spawn there. Fail soft: log once and let callers fall back to
+      // whatever in-process daemon path is available rather than surfacing
+      // a 500 to API consumers. Reported as issue #41 (Bug 3).
+      if (!subprocessFallbackUnavailableLogged.value) {
+        subprocessFallbackUnavailableLogged.value = true
+        log.warn(TAG, `[daemon] Subprocess fallback unavailable in this build (${errorMessage(err)}). The in-process daemon will continue to be the primary path.`)
+      }
+      return false
+    }
+    const { root, entry } = resolved
     const adminPort = await reservePort()
     const adminToken = crypto.randomBytes(24).toString('hex')
     fs.mkdirSync(path.dirname(DAEMON_LOG_PATH), { recursive: true })
@@ -426,6 +463,28 @@ export async function stopDaemonProcess(opts?: {
   const source = opts?.source || 'unknown'
   const manualStop = opts?.manualStop === true
   const metadata = readDaemonAdminMetadata()
+  const inProcessSnapshot = getInProcessDaemonSnapshot()
+
+  if (inProcessSnapshot && (!metadata || metadata.pid === process.pid || !isProcessRunning(metadata.pid))) {
+    await stopDaemon({ source, manualStop })
+    clearDaemonAdminMetadata()
+    patchDaemonStatusRecord((current) => ({
+      ...current,
+      pid: null,
+      adminPort: null,
+      desiredState: 'stopped',
+      manualStopRequested: manualStop ? true : current.manualStopRequested,
+      stoppedAt: now(),
+      updatedAt: now(),
+      lastStopSource: source,
+      lastStatus: {
+        ...getDaemonStatus(),
+        manualStopRequested: manualStop ? true : current.manualStopRequested,
+      },
+      lastHealthSummary: getDaemonHealthSummary() as DaemonHealthSummaryPayload,
+    }))
+    return true
+  }
 
   if (!metadata || !isProcessRunning(metadata.pid)) {
     clearDaemonAdminMetadata()
@@ -488,12 +547,16 @@ export async function stopDaemonProcess(opts?: {
 }
 
 export async function getDaemonStatusSnapshot(): Promise<DaemonStatusPayload> {
+  const inProcessSnapshot = getInProcessDaemonSnapshot()
+  if (inProcessSnapshot) return inProcessSnapshot.status
   const live = await getLiveDaemonSnapshot()
   if (live) return live.status
   return buildFallbackStatus()
 }
 
 export async function getDaemonHealthSummarySnapshot(): Promise<DaemonHealthSummaryPayload> {
+  const inProcessSnapshot = getInProcessDaemonSnapshot()
+  if (inProcessSnapshot) return inProcessSnapshot.healthSummary
   const live = await getLiveDaemonSnapshot()
   if (live) return live.healthSummary
   return buildFallbackHealthSummary()
@@ -501,6 +564,8 @@ export async function getDaemonHealthSummarySnapshot(): Promise<DaemonHealthSumm
 
 export async function runDaemonHealthCheckViaAdmin(source: string): Promise<DaemonSnapshotResponse> {
   await ensureDaemonProcessRunning(source, { manualStart: true })
+  const inProcessSnapshot = getInProcessDaemonSnapshot()
+  if (inProcessSnapshot) return inProcessSnapshot
   const metadata = readDaemonAdminMetadata()
   if (!metadata) {
     return {

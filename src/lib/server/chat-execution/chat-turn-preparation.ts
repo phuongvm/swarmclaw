@@ -1,8 +1,9 @@
 import fs from 'fs'
 import os from 'os'
 
+import { log } from '@/lib/server/logger'
 import { getProvider } from '@/lib/providers'
-import type { ExecutionBrief, Message, Session } from '@/types'
+import type { Agent, ExecutionBrief, Message, Session } from '@/types'
 import {
   decryptKey,
   loadCredentials,
@@ -14,7 +15,7 @@ import { loadSettings } from '@/lib/server/settings/settings-repository'
 import { loadSkills } from '@/lib/server/skills/skill-repository'
 import { resolveImagePath } from '@/lib/server/resolve-image'
 import { resolveSessionToolPolicy } from '@/lib/server/tool-capability-policy'
-import { listUniversalToolAccessExtensionIds } from '@/lib/server/universal-tool-access'
+import { listUniversalToolAccessExtensionIds, listScopedToolAccessExtensionIds } from '@/lib/server/universal-tool-access'
 import {
   buildAgentDisabledMessage,
   isAgentDisabled,
@@ -28,6 +29,7 @@ import {
 import {
   applyResolvedRoute,
   resolvePrimaryAgentRoute,
+  type ResolvedAgentRoute,
 } from '@/lib/server/agents/agent-runtime-config'
 import {
   runCapabilityBeforeMessageWrite,
@@ -189,17 +191,13 @@ function joinSystemPromptBlocks(...blocks: Array<string | null | undefined>): st
   return joined || undefined
 }
 
-function syncSessionFromAgent(sessionId: string): void {
-  const session = getSession(sessionId)
-  if (!session?.agentId) return
-  const agent = getAgent(session.agentId)
-  if (!agent) return
-
+export function applyAgentSyncToSession(
+  session: Session,
+  agent: Agent,
+  route: ResolvedAgentRoute | null,
+  sessionId: string,
+): { session: Session; changed: boolean } {
   let changed = false
-  const route = resolvePrimaryAgentRoute(agent, undefined, {
-    preferredGatewayTags: session.routePreferredGatewayTags || [],
-    preferredGatewayUseCase: session.routePreferredGatewayUseCase || null,
-  })
   if (!session.provider && agent.provider) { session.provider = agent.provider; changed = true }
   if ((session.model === undefined || session.model === null || session.model === '') && agent.model !== undefined) {
     session.model = agent.model
@@ -207,19 +205,24 @@ function syncSessionFromAgent(sessionId: string): void {
   }
   if (route) {
     const resolved = applyResolvedRoute({ ...session }, route)
-    if (session.provider !== resolved.provider) { session.provider = resolved.provider; changed = true }
-    if (session.model !== resolved.model) { session.model = resolved.model; changed = true }
-    if ((session.credentialId || null) !== (resolved.credentialId || null)) {
-      session.credentialId = resolved.credentialId ?? null
-      changed = true
-    }
-    if (JSON.stringify(session.fallbackCredentialIds || []) !== JSON.stringify(resolved.fallbackCredentialIds || [])) {
-      session.fallbackCredentialIds = [...(resolved.fallbackCredentialIds || [])]
-      changed = true
-    }
-    if ((session.apiEndpoint || null) !== (resolved.apiEndpoint || null)) {
-      session.apiEndpoint = resolved.apiEndpoint ?? null
-      changed = true
+    // Do NOT sync provider/model from the route here — the user may have manually
+    // switched the session model, and we must preserve that choice.
+    // Provider/model are initialized from the route at session-creation time only.
+    // Only sync credentials/endpoint when the session's provider still matches the
+    // route's provider — if the user switched providers, leave their credential alone.
+    if (session.provider === resolved.provider) {
+      if ((session.credentialId || null) !== (resolved.credentialId || null)) {
+        session.credentialId = resolved.credentialId ?? null
+        changed = true
+      }
+      if (JSON.stringify(session.fallbackCredentialIds || []) !== JSON.stringify(resolved.fallbackCredentialIds || [])) {
+        session.fallbackCredentialIds = [...(resolved.fallbackCredentialIds || [])]
+        changed = true
+      }
+      if ((session.apiEndpoint || null) !== (resolved.apiEndpoint || null)) {
+        session.apiEndpoint = resolved.apiEndpoint ?? null
+        changed = true
+      }
     }
     if ((session.gatewayProfileId || null) !== (resolved.gatewayProfileId || null)) {
       session.gatewayProfileId = resolved.gatewayProfileId ?? null
@@ -296,9 +299,21 @@ function syncSessionFromAgent(sessionId: string): void {
       changed = true
     }
   }
+  return { session, changed }
+}
 
+export function syncSessionFromAgent(sessionId: string): void {
+  const session = getSession(sessionId)
+  if (!session?.agentId) return
+  const agent = getAgent(session.agentId)
+  if (!agent) return
+  const route = resolvePrimaryAgentRoute(agent, undefined, {
+    preferredGatewayTags: session.routePreferredGatewayTags || [],
+    preferredGatewayUseCase: session.routePreferredGatewayUseCase || null,
+  })
+  const { session: updated, changed } = applyAgentSyncToSession(session, agent, route, sessionId)
   if (changed) {
-    saveSession(sessionId, session)
+    saveSession(sessionId, updated)
   }
 }
 
@@ -331,9 +346,17 @@ function buildAgentSystemPrompt(
   const allowSilentReplies = isDirectConnectorSession(session)
   const lightweightDirectChat = options?.lightweightDirectChat === true
   const parts: string[] = []
-  const enabledExtensions = listUniversalToolAccessExtensionIds(
-    getEnabledCapabilityIds(session).length > 0 ? getEnabledCapabilityIds(session) : getEnabledCapabilityIds(agent),
-  )
+  const capabilityIds = getEnabledCapabilityIds(session).length > 0
+    ? getEnabledCapabilityIds(session)
+    : getEnabledCapabilityIds(agent)
+  // Scoped tool access is the new default: if the agent declares a non-empty
+  // `tools` list, the system prompt only describes those tools. Explicit
+  // `toolAccessMode: 'universal'` opts into the full firehose (for coordinators
+  // or debugging). Agents with no declared tools fall back to universal so
+  // empty-config agents aren't crippled.
+  const enabledExtensions = agent.toolAccessMode !== 'universal' && Array.isArray(agent.tools) && agent.tools.length > 0
+    ? listScopedToolAccessExtensionIds(agent.tools, capabilityIds)
+    : listUniversalToolAccessExtensionIds(capabilityIds)
 
   const identityLines = ['## My Identity']
   identityLines.push(`Name: ${agent.name}`)
@@ -418,7 +441,17 @@ function buildAgentSystemPrompt(
     'You run on an autonomous heartbeat. If you receive a heartbeat poll and nothing needs attention, reply exactly: HEARTBEAT_OK',
   ].join('\n'))
 
-  return parts.join('\n\n')
+  const assembled = parts.join('\n\n')
+  if (process.env.SWARMCLAW_PROFILE_PROMPT === '1') {
+    // Dump per-section sizes once per turn to help size the context budget.
+    // Kept behind an env flag so production turns stay quiet.
+    const sectionSizes = parts.map((block, idx) => {
+      const firstLine = block.split('\n', 1)[0]
+      return `  [${idx}] ${firstLine.slice(0, 60)} — ${block.length} chars`
+    }).join('\n')
+    log.info('prompt-profile', `System prompt assembled (${assembled.length} chars, ${parts.length} blocks, ${enabledExtensions.length} extensions):\n${sectionSizes}`)
+  }
+  return assembled
 }
 
 function resolveApiKeyForSession(session: SessionWithCredentials, provider: ProviderApiKeyConfig): string | null {
@@ -536,8 +569,16 @@ export async function prepareChatTurn(input: ExecuteChatTurnInput): Promise<Prep
   const runtimeCapabilityIds = filterRuntimeCapabilityIds(getEnabledCapabilityIds(session), {
     delegationEnabled: agentForSession?.delegationEnabled === true,
   })
+  // Match the resolver in buildAgentSystemPrompt: default to scoped whenever
+  // the agent declares a non-empty tools list, unless explicitly set to
+  // 'universal'. Agents with no declared tools stay universal.
+  const scopedAccess = agentForSession?.toolAccessMode !== 'universal'
+    && Array.isArray(agentForSession?.tools)
+    && (agentForSession!.tools!.length > 0)
   const requestedCapabilityIds = runtimeCapabilityIds.length > 0
-    ? listUniversalToolAccessExtensionIds(runtimeCapabilityIds)
+    ? (scopedAccess
+      ? listScopedToolAccessExtensionIds(agentForSession!.tools!, runtimeCapabilityIds)
+      : listUniversalToolAccessExtensionIds(runtimeCapabilityIds))
     : []
   const toolPolicy = resolveSessionToolPolicy(requestedCapabilityIds, appSettings)
   const isHeartbeatRun = input.internal === true && source === 'heartbeat'
@@ -597,9 +638,15 @@ export async function prepareChatTurn(input: ExecuteChatTurnInput): Promise<Prep
       preferredGatewayTags: session.routePreferredGatewayTags || [],
       preferredGatewayUseCase: session.routePreferredGatewayUseCase || null,
     })
-    if (preferredRoute) {
+    if (preferredRoute && sessionForRun.provider === preferredRoute.provider) {
+      // Apply route for credentials/endpoint/gateway, but preserve the user's
+      // manually-selected model — only sync infra, not the model choice.
+      const savedModel = sessionForRun.model
       sessionForRun = applyResolvedRoute({ ...sessionForRun }, preferredRoute)
+      sessionForRun = { ...sessionForRun, model: savedModel }
     }
+    // If the user has manually switched to a different provider, skip the route
+    // entirely — the session already has the correct provider/model/credential.
   }
   let effectiveMessage = message
 

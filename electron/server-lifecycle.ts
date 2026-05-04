@@ -1,4 +1,5 @@
 import { ChildProcess, spawn } from 'node:child_process'
+import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 import { RuntimePaths } from './paths'
@@ -6,9 +7,10 @@ import { findFreePort } from './free-port'
 
 const DEFAULT_PORT = 3456
 const HEALTH_PATH = '/api/healthz'
-const READY_TIMEOUT_MS = 60_000
+const READY_TIMEOUT_MS = 300_000
 const POLL_INTERVAL_MS = 250
 const SHUTDOWN_GRACE_MS = 5_000
+const LOG_MAX_BYTES = 1_048_576
 
 export interface ServerHandle {
   url: string
@@ -20,6 +22,7 @@ export interface ServerHandle {
 
 export interface StartOptions {
   paths: RuntimePaths
+  logFile?: string
   onStderr?: (chunk: string) => void
   onStdout?: (chunk: string) => void
   onExit?: (code: number | null, signal: NodeJS.Signals | null) => void
@@ -43,6 +46,8 @@ export async function startEmbeddedServer(opts: StartOptions): Promise<ServerHan
   }
   delete env.ELECTRON_NO_ATTACH_CONSOLE
 
+  const logStream = opts.logFile ? openLogStream(opts.logFile) : null
+
   const child = spawn(process.execPath, [opts.paths.standaloneEntry], {
     cwd: path.dirname(opts.paths.standaloneEntry),
     env,
@@ -51,9 +56,18 @@ export async function startEmbeddedServer(opts: StartOptions): Promise<ServerHan
 
   child.stdout?.setEncoding('utf8')
   child.stderr?.setEncoding('utf8')
-  child.stdout?.on('data', (c: string) => opts.onStdout?.(c))
-  child.stderr?.on('data', (c: string) => opts.onStderr?.(c))
-  child.on('exit', (code, signal) => opts.onExit?.(code, signal))
+  child.stdout?.on('data', (c: string) => {
+    logStream?.write(c)
+    opts.onStdout?.(c)
+  })
+  child.stderr?.on('data', (c: string) => {
+    logStream?.write(c)
+    opts.onStderr?.(c)
+  })
+  child.on('exit', (code, signal) => {
+    logStream?.end(`\n[swarmclaw] server exited code=${code ?? 'null'} signal=${signal ?? 'none'}\n`)
+    opts.onExit?.(code, signal)
+  })
 
   const url = `http://127.0.0.1:${port}`
   await waitForReady(url, child)
@@ -64,6 +78,36 @@ export async function startEmbeddedServer(opts: StartOptions): Promise<ServerHan
     wsPort,
     process: child,
     stop: () => stopServer(child),
+  }
+}
+
+function openLogStream(logFile: string): fs.WriteStream {
+  fs.mkdirSync(path.dirname(logFile), { recursive: true })
+  try {
+    const stat = fs.statSync(logFile)
+    if (stat.size > LOG_MAX_BYTES) fs.truncateSync(logFile, 0)
+  } catch {
+    // file did not exist — will be created on first write
+  }
+  const stream = fs.createWriteStream(logFile, { flags: 'a', encoding: 'utf8' })
+  stream.write(`\n[swarmclaw] --- server launch ${new Date().toISOString()} ---\n`)
+  return stream
+}
+
+export function tailLogFile(logFile: string, bytes = 4096): string {
+  try {
+    const fd = fs.openSync(logFile, 'r')
+    try {
+      const stat = fs.fstatSync(fd)
+      const toRead = Math.min(bytes, stat.size)
+      const buf = Buffer.alloc(toRead)
+      fs.readSync(fd, buf, 0, toRead, stat.size - toRead)
+      return buf.toString('utf8')
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    return ''
   }
 }
 

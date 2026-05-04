@@ -608,14 +608,22 @@ const FilesExtension: Extension = {
   ],
 }
 
-registerNativeCapability('files', FilesExtension)
+// Registered under 'files_v2' to avoid colliding with the v1 FileExtension
+// in `file.ts`, which also registers under the literal key 'files'. The
+// builder below is wired into `session-tools/index.ts` via the same key.
+registerNativeCapability('files_v2', FilesExtension)
 
 // ---------------------------------------------------------------------------
 // Tool builder (called from session-tools/index.ts)
 // ---------------------------------------------------------------------------
 
 export function buildFilesTools(bctx: ToolBuildContext) {
-  if (!bctx.hasExtension('files')) return []
+  // Gate on 'files_v2' (not 'files'). Previously this checked 'files', which
+  // meant that enabling the v1 `files` extension activated BOTH builders and
+  // registered two tools literally named "files". Most providers tolerate
+  // duplicate tool names; Moonshot/Kimi rejects them with `function name
+  // files is duplicated`. Reported as issue #39.
+  if (!bctx.hasExtension('files_v2')) return []
 
   return [
     tool(

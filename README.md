@@ -8,6 +8,12 @@
   <img src="https://raw.githubusercontent.com/swarmclawai/swarmclaw/main/public/branding/swarmclaw-org-avatar.png" alt="SwarmClaw lobster logo" width="120" />
 </p>
 
+<p align="center"><strong>Self-hosted runtime for autonomous AI agents.</strong> Multi-provider, MCP-native, with memory, skills, delegation, and schedules.</p>
+
+<p align="center">
+  <img src="doc/assets/screenshots/org-chart.png" alt="SwarmClaw org chart with delegation and live agent activity" width="900" />
+</p>
+
 SwarmClaw is a self-hosted AI runtime for OpenClaw and multi-agent work. It helps you run autonomous agents and orchestrators with heartbeats, schedules, delegation, memory, runtime skills, and reviewed conversation-to-skill learning across OpenClaw gateways and other providers.
 
 GitHub: https://github.com/swarmclawai/swarmclaw  
@@ -75,8 +81,11 @@ Extension tutorial: https://swarmclaw.ai/docs/extension-tutorial
 Download the one-click installer from [swarmclaw.ai/downloads](https://swarmclaw.ai/downloads).
 Available for macOS (Apple Silicon & Intel), Windows, and Linux (AppImage + .deb).
 
-Current builds are unsigned, so on first launch:
-- **macOS:** right-click the app in Finder → **Open** → **Open** to bypass Gatekeeper.
+Current builds are ad-hoc signed but not notarized, so on first launch:
+- **macOS:** right-click the app in Finder → **Open** → **Open** to bypass Gatekeeper. If macOS instead reports *"SwarmClaw is damaged and can't be opened"* (common on Apple Silicon when the dmg was quarantined by Safari), strip the quarantine attribute and relaunch:
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/SwarmClaw.app
+  ```
 - **Windows:** if SmartScreen appears, click **More info** → **Run anyway**.
 - **Linux (AppImage):** `chmod +x` the downloaded file, then run it.
 
@@ -175,6 +184,7 @@ Full hosted deployment guides live at https://swarmclaw.ai/docs/deployment
 - **Memory**: hybrid recall, graph traversal, journaling, durable documents, project-scoped context, automatic reflection memory, communication preferences, profile and boundary memory, significant events, and open follow-up loops.
 - **Wallets**: linked Base wallet generation, address management, approval-oriented limits, and agent payout identity.
 - **Connectors**: Discord, Slack, Telegram, WhatsApp, Teams, Matrix, OpenClaw, SwarmDock, SwarmFeed, and more.
+- **MCP Servers**: connect any Model Context Protocol server (stdio, SSE, or streamable HTTP) and inject its tools into agents alongside built-ins. Configure, test, and assign per-agent from the MCP Servers panel.
 - **Extensions**: external tool extensions, UI modules, hooks, and install/update flows.
 
 ## What SwarmClaw Focuses On
@@ -389,113 +399,203 @@ Operational docs: https://swarmclaw.ai/docs/observability
 
 ## Releases
 
-### v1.5.37 Highlights
+### v1.8.1 Highlights
 
-- **Factory Droid CLI as a provider and delegation backend**: adds [`droid`](https://docs.factory.ai/cli/droid-exec/overview) as a first-class chat provider and `delegate` backend with streaming JSON output, session resume, and a conservative `--auto low` autonomy pin on the delegate path. Install `droid` and sign in via browser (or set `FACTORY_API_KEY`), then pick **Factory Droid CLI** in the setup wizard. Resolves #38.
-- **Desktop Release CI hardening**: v1.5.36's Electron build workflow failed on all three platforms. This release:
-  - Adds a proper `author` with email to `package.json` and a `linux.maintainer` entry in `electron-builder.yml` so the Linux `.deb` target stops rejecting the build.
-  - Pins `outputFileTracingRoot` in `next.config.ts` to the project root so the Next.js build no longer walks `C:\Users\<user>\Application Data` (a legacy NTFS junction that throws EPERM on Windows runners).
-  - Pins Python 3.11 in the desktop-release workflow so `node-gyp` rebuilds of native modules (`node-liblzma`, etc.) succeed on Python 3.12+ runners where `distutils` was removed from the stdlib.
+Operator evidence release: a focused follow-up that makes release and mission review easier to scan.
 
-### v1.5.36 Highlights
+- **Operations Pulse.** Home and Quality now share a live triage panel that rolls missions, runs, approvals, connector readiness, and budget pressure into one next-action queue.
+- **Run Briefs.** Run detail sheets now open with a deterministic brief: objective, owner, timeline, warnings, usage, and evidence before the raw replay log.
+- **Evidence Shelf.** Runs and missions now expose linked artifacts, task outputs, protocol outputs, mission reports, public share links, and knowledge citations through a shared artifact resolver.
+- **Connector readiness.** Connector cards now show credential, route, pairing, gateway, connection, and doctor hints so setup gaps are visible before a platform bridge is started.
+- **API surface.** Added `GET /api/operations/pulse`, `GET /api/runs/:id/brief`, and `GET /api/artifacts` for external operator dashboards and release tooling.
 
-- **Desktop app (Electron)**: SwarmClaw now ships as a native desktop app for macOS (Apple Silicon + Intel), Windows, and Linux (AppImage + .deb). Download from [swarmclaw.ai/downloads](https://swarmclaw.ai/downloads). The app wraps the existing standalone server inside an Electron shell, stores data in the OS app-data directory, and auto-updates via GitHub Releases (notify-only on unsigned macOS builds).
-- **Desktop release CI**: new `desktop-release.yml` workflow builds and publishes installers for all three platforms to GitHub Releases on every version tag.
-- **UI cleanup**: removed sibling-product navigation links from the in-app sidebar rail and login gate so the open-source app focuses on SwarmClaw itself. Those links remain in the project README and on swarmclaw.ai.
+### v1.8.0 Highlights
 
-### v1.5.35 Highlights
+Mission Command release: a bigger operator update that makes autonomous missions easier to launch, inspect, and share.
 
-- **Update safety: prevent DB corruption on Linux**: `npm run update:easy`, `swarmclaw update`, and the in-app update endpoint now stop the running server (or checkpoint the SQLite WAL) before rebuilding native modules, preventing the WAL journal corruption that forced some Linux users back to the setup wizard.
-- **SQLite graceful shutdown**: the server now checkpoints and closes the database on SIGTERM/SIGINT, eliminating stale WAL state after any clean stop.
-- **Doctor: detect dangling gateway credentials**: the setup doctor now flags gateway profiles that reference deleted or missing credentials, explaining the "gateway token missing" connection errors.
-- **Gateway credential resolution logging**: when a gateway credential can't be resolved, the server now logs a clear warning identifying the missing credential ID.
-- **Credential decryption error logging**: when a stored credential can't be decrypted (e.g. after `CREDENTIAL_SECRET` changes), the server now logs the credential ID and provider so users know which key to re-add.
+- **Mission Command launchpad.** The home launchpad now opens concrete mission starters for Release QA, Launch Sprint, Cost Audit, and Connector Smoke Test instead of dropping users into a generic mission list.
+- **Deep-linked mission templates.** `/missions?template=<id>` opens the right starter template directly, and the template installer can create a mission-driver chat when no sessions exist yet.
+- **Quality Center handoffs.** `/quality?tab=evals|approvals|runs` is shareable, and the Quality overview/Eval Lab can start a Release QA mission from current operator evidence.
+- **Public mission reports.** Missions can mint, copy, and revoke public share links from the detail view. Shared pages render status, budgets, milestones, and generated reports using the existing allowlisted share resolver.
+- **Safer share payloads.** Mission milestones now expose `summary` correctly in public HTML and raw markdown shares, with regression coverage in `npm run test:runtime`.
 
-### v1.5.34 Highlights
+### v1.7.3 Highlights
 
-- **Ollama Cloud auth fix**: SwarmClaw now normalizes `api.ollama.com` and `www.ollama.com` to `ollama.com` before making authenticated requests, avoiding the redirect that was dropping authorization headers and causing false provider-health/runtime failures.
-- **Chat execution context hardening**: tool invocation now resolves names case-insensitively, oversized tool results are truncated before they are fed back into the model, and proactive grounding/heartbeat prompts stay smaller under pressure to reduce avoidable context blowouts.
-- **API compatibility fixes**: OpenAI-compatible streaming now captures reasoning deltas from providers that emit them outside `delta.content`, and A2A endpoints are exempt from the main proxy access-key gate so they can rely on their own auth scheme.
+Desktop packaging fix for Linux AppImage and deb builds.
 
-### v1.5.33 Highlights
+- **Linux desktop native modules match Electron.** Packaged Linux builds now copy Electron-rebuilt native addons into the embedded Next standalone server, fixing the `better-sqlite3` Node ABI mismatch reported in [#65](https://github.com/swarmclawai/swarmclaw/issues/65).
+- **Desktop packaging regression coverage.** The Electron `afterPack` hook now has a Linux standalone native-module sync test wired into `npm run test:cli`.
+- **macOS desktop note.** macOS builds remain ad-hoc signed and not notarized in this release, so the existing Gatekeeper/quarantine workaround still applies until Developer ID signing is available.
 
-- **CLI global flag compatibility**: legacy-routed commands now honor the documented `--access-key` and `--base-url` aliases even when they appear after the subcommand, so authenticated CLI automation works the same across binary entry points.
-- **Docker build memory hardening**: production Next.js builds now size `--max-old-space-size` from the detected container/cgroup memory limit, with `SWARMCLAW_BUILD_MAX_OLD_SPACE_SIZE_MB` available as an explicit override for constrained Docker Desktop and CI environments.
+### v1.7.2 Highlights
 
-### v1.5.31 Highlights
+CLI provider usability follow-up for v1.7.0/v1.7.1. The expanded coding-agent roster is now easier to find, configure, and validate from onboarding and setup diagnostics.
 
-- **Fix Docker first-run crash**: resolved `EISDIR: illegal operation on a directory, read` error when running `docker compose up` without a pre-existing `.env.local` file. Docker was creating a directory mount instead of a file, which crashed Next.js on startup. Replaced the file bind mount with `env_file` directive using `required: false`.
+- **Shared CLI provider registry.** Bespoke and generic CLI providers now share one metadata source for display names, binary names, capabilities, setup defaults, and provider-set behavior, reducing drift across onboarding, runtime routing, setup doctor, and capability prompts.
+- **Onboarding exposes the full CLI roster.** The setup wizard groups providers by CLI agents, gateways/local runtimes, API providers, and custom endpoints, with search so the 31 extended CLI providers added in v1.7 are usable without digging through settings.
+- **Connection checks for every CLI provider.** Bespoke CLIs keep auth-aware checks, while generic CLIs verify that the expected binary is on PATH and return actionable install guidance when missing.
+- **Update banner polish.** Source installs now show the target stable tag/version, remember dismissal per release target, and make the required restart after update explicit.
+- **macOS desktop note.** macOS builds remain ad-hoc signed and not notarized in this release, so the existing Gatekeeper/quarantine workaround still applies until Developer ID signing is available.
 
-### v1.5.4 Highlights
+### v1.7.1 Highlights
 
-- **Cursor Agent CLI built-in provider**: Cursor Agent CLI is now a first-class worker provider with session continuity, headless execution, and delegation support.
-- **Qwen Code CLI built-in provider**: Qwen Code CLI is now available as a built-in worker provider and delegation backend with structured headless execution support.
-- **Goose built-in provider**: Goose is now supported as a runtime-managed worker provider, using its own local auth and provider configuration while preserving SwarmClaw session continuity.
-- **CLI setup and health parity**: setup flows, provider checks, setup doctor, and provider-facing UI now recognize Cursor, Qwen Code, and Goose alongside the existing CLI-backed providers.
+Republish of v1.7.0 from the correct commit. The v1.7.0 tarball on npm was inadvertently published from a pre-rebase tree that did not include the v1.6.1 codex continuity fixes (PR #62) or the v1.6.2 plan doc. v1.7.1 ships the same coding-agent-roster expansion on top of the correct v1.6.1+ history.
 
-### v1.5.3 Highlights
+Use v1.7.1 instead of v1.7.0; v1.7.0 has been deprecated on npm.
 
-- **Copilot CLI v1.x compatibility**: the `copilot-cli` provider now handles the current event format (`assistant.message_delta`, `assistant.message`, updated `result` payload) while keeping backward compatibility with the legacy format. Also fixes `--resume` flag syntax. (Community contribution by [@borislavnnikolov](https://github.com/borislavnnikolov) -- PR #36)
+### v1.7.0 Highlights
 
-### v1.5.2 Highlights
+Extended CLI provider roster — every coding agent recognized by SwarmSkills now has a corresponding CLI provider in SwarmClaw, routed through a generic streamer when no bespoke parser exists.
 
-- **Hosted deploy path for SwarmClaw itself**: added root-level `render.yaml`, `fly.toml`, and `railway.json` so the published `ghcr.io/swarmclawai/swarmclaw:latest` image is easier to run on always-on platforms.
-- **Public health endpoint for hosted platforms**: added `/api/healthz` and exempted it from access-key auth so Render, Fly.io, and Railway can perform liveness checks without weakening the rest of the API surface.
-- **OTLP/OpenTelemetry foundation**: SwarmClaw can now export traces for chat turns, direct model streams, protocol runs, and tool execution to any OTLP-compatible backend using environment variables only.
-- **Docs and landing-page deploy refresh**: `swarmclaw.ai` now exposes the hosted deploy path and a dedicated observability guide instead of burying those operator workflows in general setup docs.
+- **31 new CLI providers.** Aider, Amp, Augment, AdaL, IBM Bob, Cline, CodeBuddy, Command Code, Continue, Cortex Code, Crush, Deep Agents, Firebender, iFlow, Junie, Kilo Code, Kimi, Kode, MCPJam, Mistral Vibe, Mux, Neovate, OpenHands, Pochi, Qoder, Replit Agent, Roo Code, TRAE CN, Warp Agent, Windsurf, and Zencoder are now first-class provider IDs in `ProviderType`.
+- **Generic CLI streamer.** New `streamGenericCliChat` (`src/lib/providers/generic-cli.ts`) spawns the configured binary with the prompt as final argv and emits stdout lines as SSE deltas. Used by the new providers when no bespoke parser is available; existing bespoke parsers (Claude, Codex, Cursor, Gemini, Copilot, Droid, Qwen, OpenCode, Goose) are untouched.
+- **Capability metadata.** `CLI_PROVIDER_CAPABILITIES` (`src/lib/providers/cli-utils.ts`) carries a one-line description for each new provider so the UI and `isCliProvider()` recognize them.
+- **Tests.** New `generic-cli.test.ts` exercises the streamer against `echo` and asserts the missing-binary error path; `cli-utils.test.ts` extends the CLI provider recognition coverage.
 
-### v1.5.1 Highlights
+### v1.6.1 Highlights
 
-- **Standalone connector lifecycle**: connector start, stop, status, and repair now work correctly in standalone production builds (`npm start` / pm2) where the daemon runs in-process. Previously these operations silently failed because the controller assumed a daemon subprocess was always present. (Community contribution by [@borislavnnikolov](https://github.com/borislavnnikolov) -- PR #35)
+Follow-up release for v1.6 with workflow starts, safer metadata handling, A2A discovery polish, and [#61](https://github.com/swarmclawai/swarmclaw/pull/61) by [@latentwill](https://github.com/latentwill). Thanks latentwill!
 
-### v1.5.0 Highlights
+- **Mission and protocol templates for real work.** New starter paths cover codebase review sprints, research bureau scans, content studio cycles, release readiness panels, synthesis panels, and builder review loops.
+- **Home launchpad paths.** First-run users can choose a self-hosted assistant, visual workflow, or autonomous mission path, with quality actions still one click away.
+- **A2A discovery is easier to integrate.** The canonical `/.well-known/agent-card.json` endpoint now works alongside the legacy API route and hides disabled or trashed agents from public discovery.
+- **Internal metadata stripping is safer.** Side-channel JSON is removed with balanced-object parsing and zod validation so nested payloads are scrubbed without deleting ordinary user JSON.
+- **Browser smoke gate restored.** `npm run test:e2e` now runs a Playwright smoke against health, A2A discovery, `/home`, and `/quality`, either against a live URL or a temporary local dev server.
+- **OpenCode CLI hang fixed.** OpenCode CLI delegation no longer keeps an inherited stdin pipe open, preventing hangs in non-interactive runs.
 
-- **First-run activation refresh**: setup now includes a dedicated start-path step, broad starter shapes instead of niche presets, and draft agents generated directly from the chosen setup shape.
-- **Guided post-setup launchpad**: finishing setup now routes through action-oriented next steps such as opening the first agent chat, launching a structured session, connecting platforms, or reviewing usage.
-- **State-aware home and protocols**: fresh workspaces now open on a launchpad instead of a sparse ops dashboard, and the Protocols page now surfaces the visual builder and template gallery directly.
+### v1.6.0 Highlights
 
-### v1.4.9 Highlights
+Operator Quality Center release for builders running autonomous agents in production-like workflows.
 
-- **Standalone build reliability**: `public/`, `.next/static/`, and `css-tree/data/` are now automatically copied into the standalone build output, fixing runtime crashes and missing assets when running the standalone bundle. (Community contribution by [@borislavnnikolov](https://github.com/borislavnnikolov) — PR #34)
+- **New Quality workspace.** `/quality` brings run health, failed/running counts, pending approvals, latest eval scores, and attention shortcuts into one operator surface.
+- **Eval Lab and Approval Desk.** Existing eval and approval APIs are now exposed through a practical UI for running scenarios/suites, reviewing score evidence, and approving or denying human-loop/tool/connector/skill requests.
+- **Run Review upgrades.** The run history now has source filtering and search across run id, source, errors, results, and ownership fields while keeping the existing replay/evidence sheet.
+- **Release-ready mission templates.** New templates cover Release Candidate QA, Agent Cost Audit, Connector Smoke Test, Failed Run Triage, and Weekly Agent Quality Report using the existing mission budget/report model.
+- **Home launchpad quality actions.** First-run users can jump straight to evals, approvals, failed runs, and release QA missions from the operational launchpad.
 
-### v1.4.8 Highlights
+### v1.5.71 Highlights
 
-- **Agent-scoped SwarmFeed dashboard**: the in-app feed now has an explicit acting-agent model so humans can direct social actions without ever posting as a separate user identity.
-- **Expanded feed surface**: added Bookmarks and Notifications tabs, SwarmFeed search, suggested follows, thread detail sheets, profile sheets, and a restored visible composer.
-- **Broader SwarmFeed tool/API support**: the built-in `swarmfeed` tool and internal API now support follow/unfollow, bookmark/unbookmark, quote reposts, notifications, profile lookup, thread reads, and search.
-- **Social heartbeat enforcement**: task-completion posting, daily/manual-only guardrails, and heartbeat dependency warnings now match the agent-first SwarmFeed model instead of leaving social automation loosely implied.
+Fast-follow release for [#60](https://github.com/swarmclawai/swarmclaw/pull/60) by [@borislavnnikolov](https://github.com/borislavnnikolov). Thanks Borislav!
 
-### v1.4.7 Highlights
+- **Browser MCP works from standalone builds again.** The Next standalone output now includes the Playwright MCP runtime packages required by packaged SwarmClaw builds.
+- **Host browser launches use cached Chromium.** Local Playwright MCP startup now selects Chromium explicitly instead of depending on a system Chrome install.
+- **Standalone repair is more robust.** The build repair step now fills partially traced Playwright MCP package directories, and the packaging and browser startup paths are covered by regression tests.
 
-- **Hermes Agent built-in provider**: Added first-class Hermes support through the Hermes API server, including optional auth, local or remote `/v1` endpoints, and runtime-managed agent handling.
-- **OpenRouter built-in provider**: OpenRouter is now a built-in provider instead of living only behind the generic custom-provider path.
-- **Runtime-managed provider handling**: Hermes now skips SwarmClaw's local extension/tool injection path so its own runtime stays in control, while setup and model discovery still work through the normal provider flow.
-- **Provider docs refresh**: README and docs now reflect the new provider list, remote Hermes API-server support, and logo assets for OpenRouter and Hermes Agent.
+### v1.5.70 Highlights
 
-### v1.4.6 Highlights
+Fast-follow release for [#56](https://github.com/swarmclawai/swarmclaw/pull/56) by [@latentwill](https://github.com/latentwill). Thanks latentwill!
 
-- **SwarmDock startup sync**: Existing SwarmDock agents now authenticate and reconcile their live marketplace profile on connector start, updating stale description, skills, framework/model metadata, and payout wallet fields
-- **Agent wallet fallback**: SwarmDock connectors now fall back to the agent's selected marketplace wallet when no connector-level wallet address is configured
-- **Task filter fix**: The built-in `swarmdock` tool now uses the correct `skills=` task filter when browsing marketplace tasks from chat
-- **SwarmDock SDK bump**: Updated `@swarmdock/sdk` from `0.5.2` to `0.5.3`, aligning the connector with the published metadata-sync fixes
+Also includes fixes for [#57](https://github.com/swarmclawai/swarmclaw/issues/57) and [#58](https://github.com/swarmclawai/swarmclaw/issues/58) reported by [@zantak](https://github.com/zantak). Thanks zantak!
 
-### v1.4.5 Highlights
+- **Builtin provider saves work again.** Saving a builtin provider no longer sends the strict-schema rejected `type` field, and the provider update route is now covered by the runtime test script.
+- **Knowledge sources appear on direct visits.** Panel-backed routes such as Knowledge now auto-open their source/sidebar panel on desktop route changes, while mobile keeps the drawer closed by default.
+- **Reasoning content stays out of the reply body.** OpenAI-compatible `reasoning_content` and `reasoning` stream deltas now flow into the existing collapsed Thinking panel instead of being appended before the visible answer.
+- **macOS install guidance remains explicit.** Ad-hoc signed macOS desktop builds still document the quarantine workaround until Developer ID signing and notarization are available. Thanks [@yagudaev](https://github.com/yagudaev) for confirming the current workaround on Apple Silicon.
 
-- **OpenClaw 2026.4.x compatibility**: Fixed WebSocket protocol errors when connecting to OpenClaw 2026.4.2+ gateways (`profileId` was incorrectly included in RPC params)
-- **OpenClaw dependency bump**: Updated minimum OpenClaw from `2026.2.26` to `2026.4.2`
+### v1.5.69 Highlights
 
-### v1.4.4 Highlights
+Fast-follow release for [#55](https://github.com/swarmclawai/swarmclaw/pull/55) by [@borislavnnikolov](https://github.com/borislavnnikolov). Thanks Borislav!
 
-- **SwarmDock SDK bump**: Updated `@swarmdock/sdk` from `0.4.1` to `0.5.2`, picking up new error types, skill templates, and agent primitives
+- **Structured runs are easier to find.** Schedule-backed protocol runs now appear in the schedule console and unified `/api/runs` endpoints, including detail and event fallbacks for structured run records.
+- **Agent sessions get a cleaner fresh-chat flow.** Agent chat headers now expose a New chat action for sessions with history or saved CLI/runtime handles, first prompts derive compact session titles, and agent session lists sort newest-first.
+- **Structured session execution is sturdier.** CLI providers can execute structured turns through their direct provider runtime, blank structured responses now surface the real logged error where possible, successful structured turns clear their watchdog timers promptly, schedule timing changes recompute `nextRunAt`, and in-process daemon status/control paths are covered.
+- **Package contents are safer.** The npm package allowlist now explicitly excludes local env files under `src/` even when a maintainer has private ignored config in their working tree.
 
-### v1.4.3 Highlights
+### v1.5.68 Highlights
 
-- **SwarmDock agent opt-in**: Agents can now opt into the SwarmDock marketplace directly from their settings sheet with description, skills, wallet, and auto-bid configuration
-- **SwarmFeed & SwarmDock tools**: Agents get `swarmfeed` and `swarmdock` tools auto-enabled when opted in, allowing autonomous posting, replying, liking, browsing tasks, and checking status from chat
-- **Auto-registration**: Enabling SwarmFeed on an agent automatically registers it on the SwarmFeed network (no manual connector setup required)
-- **Marketplace page**: New `/marketplace` sidebar page showing live SwarmDock tasks and agents
-- **Following tab fix**: SwarmFeed Following tab gracefully handles unregistered agents instead of showing a 401 error
-- **Compose removal**: Removed manual compose UI from Feed page — agents post autonomously through their tools
+Launch-readiness release for turning SwarmClaw's own next launch into a reusable workflow.
+
+- **Launch Week Growth Sprint mission template.** The mission template gallery now includes a launch-week operator that audits the product/docs, drafts GitHub Release, Product Hunt, Show HN, social, and community copy, identifies the top demo moments, and produces daily feedback/metrics/follow-up reports. The default goal explicitly keeps public posting behind approval.
+- **Security and release metadata refresh.** Next.js is updated to `16.2.4` in the app and docs site, OpenClaw / Discord.js / selected transitives are refreshed so the production high/critical audit gate passes, and the stale `package-lock.json` root version is realigned with the published package version.
+- **Desktop release gate hardening.** `npm run electron:build` now restores host-architecture native modules after macOS multi-arch packaging, so a local release smoke build no longer leaves the checkout unable to run the next host build.
+- **Launch assets and docs.** Added a concrete v1.5.68 launch plan in `docs/release/v1.5.68-launch-plan.md`, refreshed the website release notes/docs index, and updated stale install examples so public launch traffic sees current instructions.
+
+### v1.5.67 Highlights
+
+Three chatroom-focused fixes from a community contribution by [@borislavnnikolov](https://github.com/borislavnnikolov). Thanks Borislav!
+
+- **Inspect a chatroom member mid-turn.** Clicking a member avatar in a chatroom while that agent is busy now opens a bottom sheet with the agent's synthetic chatroom session: recent messages, execution-log entries, and counts. Previously the click jumped to the agent detail page, which lost the chatroom context. The synthetic session-id convention (`chatroom-<roomId>-<agentId>`) is now centralized in `src/lib/chatroom-sessions.ts` and shared between the UI and `chatroom-helpers.ts` so the two halves can never drift.
+- **Continue a specific session, not just the agent's main thread.** The store now exposes an `activeSessionIdOverride` on the session slice. Selecting a chat from the Chat List or a specific session row from the Agent Inspector sets the override, so the chat surface opens that exact session instead of the agent's primary thread session. The override clears automatically when the agent changes or the session is removed, with regression tests in `session-slice.test.ts` covering the override-preferred, override-stale, and fallback cases.
+- **Caret stays aligned with mention highlights in the chatroom composer.** The mention-highlight `<span>` had `px-0.5` padding that pushed the mirrored caret out of position at line ends. Padding is removed and the soft-accent background lightened slightly so the highlight still reads without nudging the layout.
+
+### v1.5.66 Highlights
+
+Fixes a runaway-token-burn bug in the orchestrator-wake and heartbeat loops. The root cause was hidden in the success/failure classification: a session run can resolve its promise successfully while still carrying an `error` on the result (e.g. a provider 429 swallowed into persisted output), and the wake trackers only incremented their failure counters on a rejected promise. So the backoff never engaged, the auto-disable-after-N-failures gate never tripped, and the wake kept firing at its configured interval indefinitely — every firing spending tokens on a full prompt against a provider that was already cooling down.
+
+- **`classifyWakeOutcome` (`src/lib/server/runtime/heartbeat-service.ts`)** — new pure helper, extracted for unit testing, that maps a resolved run result into `null` (success) or a short failure reason. A run counts as a failure when `result.error` is a non-empty string, *or* when `result.text` is empty/whitespace-only. Both the orchestrator-wake and heartbeat outcome handlers now feed through this helper, so silent-failure runs tick the failure counter and the exponential backoff (10s → 5min) kicks in normally.
+- **Auto-disable gate now trips for provider 429 / silent-wake loops.** The existing `MAX_CONSECUTIVE_FAILURES = 10` threshold was already in place but unreachable for the most common failure mode (429 errors that still persisted a run). After the fix, ten consecutive dud wakes auto-disable the orchestrator/heartbeat for that agent/session and post an explicit notification instead of grinding indefinitely.
+- **Regression coverage.** `heartbeat-service.test.ts` now has 5 targeted cases on `classifyWakeOutcome` — the 429 regression, empty-output detection, non-string error fields, whitespace-only errors, and the happy path. `test:runtime` now runs 104 cases.
+
+### v1.5.65 Highlights
+
+Follow-up hardening on the v1.5.64 work after live-testing the chat-header flows, the MCP connection pool, and the MCP Registry browser. Six concrete bugs fixed in the clear/undo, MCP pool eviction, and registry-browser code paths.
+
+- **`clearChatMessages` now resets `opencodeWebSessionId` too.** The snapshot/undo pair already captured and restored it, but `clear` itself left the stale identifier in place — so a fresh opencode-web turn would resume the conversation the user intended to drop. Paired with a matching default in `storage-normalization.ts` so older session records load with `opencodeWebSessionId: null` instead of `undefined`. Regression covered by `clear-route.test.ts`.
+- **Undo toast no longer writes to the wrong chat.** If the user navigated away after clicking Clear, clicking Undo in the toast would inject restored messages into whatever chat was currently open. `chat-area.tsx` now gates the `setMessages` calls on `selectActiveSessionId === targetSessionId`; same guard added to the compact-complete path.
+- **Background MCP status probes no longer evict the connection pool.** Visiting `/mcp-servers` auto-called `POST /api/mcp-servers/:id/test` for every server, which force-disconnected pooled clients that running agents were using mid-turn. Eviction is now gated behind `?reset=1`, which only the explicit **Re-test** button sends. Regression added to `src/app/api/mcp-servers/route.test.ts`.
+- **SwarmDock MCP Registry browser actually works now.** The upstream `swarmdock-api.onrender.com` endpoint emits no CORS headers, so the in-browser `RegistryBrowser` component always failed with `Failed to fetch`. Added `GET /api/mcp-registry` and `GET /api/mcp-registry/:slug` as server-side proxies and rewired the component to call them. Verified in Chrome: 20 servers load, selecting one prefills the New MCP Server sheet with its recommended install command.
+- **`mcp-registry` CLI group.** New commands `swarmclaw mcp-registry search` and `swarmclaw mcp-registry get <slug>` so CLI workflows can pull from the same proxy.
+- **Prior release's MCP tool-evict-on-transport-failure fix** (cherry-picked from user's local branch): connection-class errors from downstream MCP tools now evict the pool entry for the originating server, so the next turn reconnects fresh instead of retrying through a half-broken transport.
+
+### v1.5.64 Highlights
+
+Two themes this release. First, **context-window management reaches the chat UI**: a live token-usage meter in every chat header, a one-click LLM-backed compaction that keeps the session alive without nuking history, and a redesigned clear flow with a 30-second undo that restores both transcripts and CLI resume IDs. Second, **MCP token spend is now controllable**: per-server `alwaysExpose` policy, per-agent eager-tool overrides, an in-session `mcp_tool_search` promoter, a long-lived connection pool, a token-cost endpoint per server, and a built-in browser for the public SwarmDock MCP registry.
+
+- **Context meter in the chat header.** New `ContextMeterBadge` (`src/components/chat/context-meter-badge.tsx`) renders a live chip showing `N% · Mk` next to the chat title, driven by `GET /api/chats/:id/context-status`. Color thresholds at 70% (amber) and 90% (red). Clicking the chip opens a popover with the full breakdown (used / remaining / messages) plus Compact and Clear buttons. The button row explicitly states: *"Long-term memory, skills, and facts are preserved. Clear only affects this chat transcript."* — so users stop fearing Clear.
+- **User-invokable `/compact` via the popover.** New `POST /api/chats/:id/compact` runs `summarizeAndCompact` with the session's own provider/model via `buildChatModel` as the summarizer. The existing hierarchical-summary pipeline in `context-manager.ts` does the work: tool failures, file ops, and adaptive chunking are all preserved. Accepts `keepLastN` in the body (2-200, default 10). Returns `status: 'no_action' | 'compacted'` plus counts. The popover gates the button below 3 messages so users don't waste LLM calls on trivially short transcripts.
+- **Clear with 30-second undo.** `POST /api/chats/:id/clear` now returns `{ cleared, undoToken, expiresAt }`, and a new `POST /api/chats/:id/clear/undo` restores the snapshot. The undo snapshot (messages + every CLI session ID including `claudeSessionId`, `codexThreadId`, `opencodeSessionId`, `opencodeWebSessionId`, `geminiSessionId`, `copilotSessionId`, `droidSessionId`, `cursorSessionId`, `qwenSessionId`, `acpSessionId`, and `delegateResumeIds`) lives in an HMR-safe in-memory store (`src/lib/server/chats/clear-undo-snapshots.ts`) with a 30-second TTL, 200-entry cap, session-scoped lookups, and single-use tokens. The chat UI wires this to a sonner toast with an Undo action; restoring fires a "Chat restored." confirmation toast.
+- **`alwaysExpose` policy for MCP servers** (`McpServerConfig.alwaysExpose: boolean | string[]`, default `true` for back-compat). Set `false` on a chatty server (e.g. a Playwright MCP with 40 tools that cost thousands of tokens per turn) and the agent binds nothing up front — it can still discover and promote specific tools via the new `mcp_tool_search` meta-tool. Set an allowlist `['query_resources', 'fetch_url']` to eagerly bind a curated subset.
+- **Per-agent `mcpEagerTools` override** (`Agent.mcpEagerTools?: string[]`) lets you force-expose specific tool names for a specific agent regardless of the server's `alwaysExpose`. Precedence: per-agent allowlist > server `alwaysExpose` > session promotions.
+- **`mcp_tool_search` meta-tool** (`src/lib/server/mcp-gateway-runtime.ts`). When a server's tools are lazy, the agent gets a single `mcp_tool_search({ query, limit? })` tool that searches the process-wide discovery cache (bare name substring + description keywords) and promotes matches for the current session. The next turn binds the promoted names for real. `SessionToolPromoter` state is keyed by session ID and HMR-safe. Behavior mirrors `@swarmclawai/mcp-gateway`'s router so users who split MCP fan-out across SwarmClaw and the gateway get consistent semantics.
+- **Long-lived MCP connection pool** (`src/lib/server/mcp-connection-pool.ts`). A single client/transport per server lives for the process lifetime instead of reconnecting every turn. Config-fingerprint tracking rotates stale entries automatically; the `/test` endpoint evicts explicitly so a config change takes effect immediately. Saves ~100-500ms × (servers × turns) per chat. HMR-safe via `hmrSingleton` so dev reloads don't leak child processes.
+- **Token-cost discovery endpoint** (`GET /api/mcp-servers/:id/tools-info`). Connects, lists tools, and reports per-tool schema tokens plus aggregates — using the same `chars / 3.5` formula as `@swarmclawai/mcp-gateway` so numbers line up side by side. Surfaces inside `mcp-server-list.tsx` so you can see which server is the costliest before an agent even runs.
+- **SwarmDock MCP Registry browser** (`src/components/mcp-servers/registry-browser.tsx`). Opens from the New MCP Server sheet and browses the public registry at `https://swarmdock-api.onrender.com/api/v1/mcp/servers`. Selecting a server populates the form with its recommended install command — one-click discovery without leaving SwarmClaw. A new `MCP Gateway (local)` preset is also bundled so users can bootstrap `@swarmclawai/mcp-gateway` in one tap.
+- **4 new CLI commands.** `swarmclaw chats context-status <id>`, `swarmclaw chats compact <id>`, `swarmclaw chats clear-undo <id>`, and the existing `chats clear` now returns the undo token so CLI scripts can build their own clear+undo workflows.
+- **Back-compat normalization.** Existing MCP servers load with `alwaysExpose: true` (historical behavior — every tool bound every turn) via `storage-normalization.ts`. No user action required to upgrade.
+- **Full regression coverage.** New tests: `clear-undo-snapshots.test.ts` (5 cases — TTL, single-use, session isolation, CLI-id preservation, expiry sweep), `clear-route.test.ts` (clear → undo → double-undo 404 → missing-session 404 round-trip), `compact-route.test.ts` (no-action path + 404), `context-status-route.test.ts`, plus `mcp-connection-pool.test.ts` and `mcp-gateway-runtime.test.ts`. `test:runtime` runs 100 tests across 13 suites.
+
+### v1.5.63 Highlights
+
+Chatroom fix from @borislavnnikolov: CLI-backed agents (codex-cli, copilot-cli, gemini-cli, and the rest of the `NON_LANGGRAPH_PROVIDER_IDS` set) now work correctly as chatroom members instead of falling through a LangGraph path they cannot run. With the execution path fixed, the worker-only membership blocks are lifted too, so any non-trashed agent can be added to a room.
+
+- **Direct provider runtime for CLI chatroom turns.** `src/app/api/chatrooms/[id]/chat/route.ts` now branches on `NON_LANGGRAPH_PROVIDER_IDS` and calls `provider.handler.streamChat()` directly for CLI-backed agents while keeping the LangGraph `streamAgentChat` path for everything else. Streaming, tool events, and persisted messages all flow through unchanged.
+- **Full member selection.** The create, update, members, session-tool, and UI layers (`src/app/api/chatrooms/route.ts`, `src/app/api/chatrooms/[id]/route.ts`, `src/app/api/chatrooms/[id]/members/route.ts`, `src/lib/server/session-tools/chatroom.ts`, `src/components/chatrooms/chatroom-sheet.tsx`) no longer reject or hide worker-only agents. Any non-trashed agent is eligible.
+- **Regression test.** `src/app/api/chatrooms/[id]/chat/route.test.ts` proves a `codex-cli`-backed chatroom turn bypasses `streamAgentChat`, streams a response through the provider handler, and persists one assistant reply.
+
+### v1.5.62 Highlights
+
+Hardens parallel sub-agent dispatch with a concurrency cap, a quorum join policy, and a cycle check — so a fan-out can't accidentally saturate providers, melt a mission budget, or wedge the runtime on a delegation loop.
+
+- **`spawn_subagent` swarm/batch actions now accept `maxConcurrency`, `joinPolicy`, `quorum`, and `cancelRemaining`.** Parallel mode fans out at most 4 branches at a time by default (hard-capped at 16). Task buckets share an `executionGroupKey` so the existing per-execution serial lock enforces the cap with zero new scheduler code. `joinPolicy: 'quorum'` resolves once `quorum` branches succeed and (by default) cancels the remaining in-flight branches. `joinPolicy: 'first'` resolves on the first success. `joinPolicy: 'all'` stays the default.
+- **Cycle detection in `spawnSubagent`.** Before creating a child session, the runtime walks the `parentSessionId` ancestry and rejects the spawn when the requested `agentId` already appears higher in the chain. Clear error message with an `allowCycle: true` escape hatch. Orthogonal to the existing depth cap.
+- **Per-agent and per-mission overrides.** `Agent.maxParallelDelegations` and `MissionBudget.maxParallelBranches` plumb into the swarm resolver. Precedence: explicit tool arg > agent cap > mission cap > system default (4). Both are validated by `AgentUpdateSchema` and the mission budget schemas, and normalized on load via `storage-normalization.ts`.
+- **Swarm snapshot exposes the effective cap.** `SwarmSnapshot.maxConcurrency` lands in the persisted snapshot payload so the UI and external tooling can surface the active concurrency level. Verified live via a 3-branch quorum run: `totalCompleted: 2`, `totalCancelled: 1`, `maxConcurrency: 2`, `joinPolicy: "quorum"`.
+
+### v1.5.61 Highlights
+
+Adds an opt-in per-agent planning mode that rides on the existing `[MAIN_LOOP_PLAN]` token machinery.
+
+- **`Agent.planningMode: 'off' | 'strict' | null`** — new optional field on the Agent type. Defaults to `null` (off) so existing agents are unaffected. Validated by `AgentCreateSchema` / `AgentUpdateSchema` and surfaced through `createAgent` in `agent-service.ts`.
+- **Strict planning prompt section.** New `buildPlanningModeSection` in `prompt-sections.ts` injects a short contract into the system prompt when `planningMode === 'strict'`: before any multi-step work, emit a single-line `[MAIN_LOOP_PLAN]{"steps":...}` block. The existing parser in `main-agent-loop.ts` reads these blocks into `MainLoopState.planSteps` / `currentPlanStep` / `completedPlanSteps` with no additional wiring. Skipped in minimal prompt mode and for heartbeat turns.
+- **Test coverage.** `prompt-sections.planning-mode.test.ts` covers the null / off / strict / minimal / missing-agent paths (6 cases).
+
+### v1.5.60 Highlights
+
+Adds a turn-snapshot primitive for external replay and comparison tooling, without touching the execution flow.
+
+- **Turn snapshot endpoint.** New `GET /api/chats/:id/turns/:index/snapshot` returns the input state of a prior user turn: the message (text + optional imagePath + time), all prior messages in order, the session's effective provider/model/endpoint/credential at snapshot time, and the bound agent's provider/model/systemPrompt when available. Invalid or non-user indices return `400`, out-of-range indices return `404`. CLI: `swarmclaw chats turn-snapshot <chatId> <index>`.
+- **Use case.** External CLIs, notebooks, and comparison harnesses can now capture the exact inputs that produced a given turn and replay them against a different model, provider, or system prompt to compare outputs — without mutating the original session. Pairs with the existing `edit-resend` path (destructive in-session replay) and the new share-link infrastructure in v1.5.59 (share the original turn's context, replay on another instance).
+
+### v1.5.59 Highlights
+
+Viral-loop release. Adds public share links for missions, skills, and sessions, plus a complementary raw-markdown endpoint so any shared skill installs directly through the existing `POST /api/skills/import`.
+
+- **Share links for missions, skills, and sessions.** New `share_links` collection in `src/lib/server/storage.ts` plus `src/lib/server/sharing/share-link-repository.ts`. `POST /api/share { entityType, entityId, expiresInSec?, label? }` mints a cryptographically random 32-char base64url token; `GET /api/share` lists; `GET /api/share/:id` fetches; `DELETE /api/share/:id` revokes (pass `?hard=true` to hard-delete). CLI: `swarmclaw share {list,mint,get,revoke,resolve,raw}`.
+- **Public read endpoints (no auth required).** `GET /api/s/:token` returns the scrubbed JSON payload; `GET /api/s/:token/raw` returns plain markdown (skills return their SKILL.md verbatim, missions render as title + goal + criteria + milestones, sessions as a transcript). Revoked and expired tokens return `404 Not found` without leaking shape information. `GET /s/:token` is a server-rendered page for dropping straight into a browser.
+- **Share-link-based skill install.** `POST /api/skills/import` already accepts an http(s) URL; pointing it at `https://<your-host>/api/s/<token>/raw` now installs a shared skill from another SwarmClaw instance without auth handshakes. Pairs naturally with existing `swarmclaw skills import` CLI.
+- **Share-link repository tests.** `share-link-repository.test.ts` covers mint / list / revoke / lookup-by-token round-trip plus expiry handling against a temporary data dir.
+
+Older releases: https://swarmclaw.ai/docs/release-notes
 
 - GitHub releases: https://github.com/swarmclawai/swarmclaw/releases
 - npm package: https://www.npmjs.com/package/@swarmclawai/swarmclaw

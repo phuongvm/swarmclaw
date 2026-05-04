@@ -184,6 +184,12 @@ const COMMAND_GROUPS = {
       'task-status': { description: 'Check A2A task status', method: 'GET', path: '/a2a/tasks/:taskId/status', params: ['taskId'] },
     },
   },
+  artifacts: {
+    description: 'Resolve evidence artifacts for runs, missions, and tasks',
+    commands: {
+      list: { description: 'List evidence artifacts (supports --query runId=,missionId=,taskId=)', method: 'GET', path: '/artifacts' },
+    },
+  },
   uploads: {
     description: 'Manage uploaded artifacts',
     commands: {
@@ -191,6 +197,12 @@ const COMMAND_GROUPS = {
       get: { description: 'Download uploaded artifact by filename', method: 'GET', path: '/uploads/:filename', params: ['filename'], binary: true },
       delete: { description: 'Delete uploaded artifact by filename', method: 'DELETE', path: '/uploads/:filename', params: ['filename'] },
       'delete-many': { description: 'Delete uploads by filter/body (filenames, olderThanDays, category, or all)', method: 'DELETE', path: '/uploads' },
+    },
+  },
+  operations: {
+    description: 'Operator triage and readiness summaries',
+    commands: {
+      pulse: { description: 'Get Operations Pulse summary (supports --query range=24h|7d)', method: 'GET', path: '/operations/pulse' },
     },
   },
   files: {
@@ -435,7 +447,10 @@ const COMMAND_GROUPS = {
       'edit-resend': { description: 'Edit and resend from a specific message index', method: 'POST', path: '/chats/:id/edit-resend', params: ['id'] },
       chat: { description: 'Send chat message (SSE stream)', method: 'POST', path: '/chats/:id/chat', params: ['id'], stream: true, waitable: true },
       stop: { description: 'Cancel active/running chat work', method: 'POST', path: '/chats/:id/stop', params: ['id'] },
-      clear: { description: 'Clear chat history', method: 'POST', path: '/chats/:id/clear', params: ['id'] },
+      clear: { description: 'Clear chat history (returns undoToken with 30s TTL)', method: 'POST', path: '/chats/:id/clear', params: ['id'] },
+      'clear-undo': { description: 'Restore a cleared chat via its undoToken', method: 'POST', path: '/chats/:id/clear/undo', params: ['id'] },
+      compact: { description: 'Summarize and compact chat history', method: 'POST', path: '/chats/:id/compact', params: ['id'] },
+      'context-status': { description: 'Report token usage and context-window status', method: 'GET', path: '/chats/:id/context-status', params: ['id'] },
       mailbox: { description: 'List mailbox envelopes for a chat', method: 'GET', path: '/chats/:id/mailbox', params: ['id'] },
       'mailbox-action': { description: 'Send/ack/clear mailbox envelopes', method: 'POST', path: '/chats/:id/mailbox', params: ['id'] },
       queue: { description: 'List queued follow-up turns for a chat', method: 'GET', path: '/chats/:id/queue', params: ['id'] },
@@ -523,6 +538,7 @@ const COMMAND_GROUPS = {
       list: { description: 'List runs (supports --query sessionId=,status=,limit=)', method: 'GET', path: '/runs' },
       get: { description: 'Get run by id', method: 'GET', path: '/runs/:id', params: ['id'] },
       events: { description: 'Get run event history by run id', method: 'GET', path: '/runs/:id/events', params: ['id'] },
+      brief: { description: 'Get deterministic run brief by run id', method: 'GET', path: '/runs/:id/brief', params: ['id'] },
     },
   },
   webhooks: {
@@ -557,6 +573,61 @@ const COMMAND_GROUPS = {
       create: { description: 'Create a goal', method: 'POST', path: '/goals' },
       update: { description: 'Update a goal', method: 'PATCH', path: '/goals/:id', params: ['id'], body: true },
       delete: { description: 'Delete a goal', method: 'DELETE', path: '/goals/:id', params: ['id'] },
+    },
+  },
+  workspaces: {
+    description: 'Manage logical workspaces (multi-workspace scaffolding)',
+    commands: {
+      list: { description: 'List workspaces', method: 'GET', path: '/workspaces' },
+      create: { description: 'Create a workspace', method: 'POST', path: '/workspaces' },
+      update: { description: 'Update a workspace', method: 'PATCH', path: '/workspaces' },
+      delete: { description: 'Delete a workspace', method: 'DELETE', path: '/workspaces' },
+      active: { description: 'Get the active workspace', method: 'GET', path: '/workspaces/active' },
+      'set-active': { description: 'Set the active workspace', method: 'POST', path: '/workspaces/active' },
+    },
+  },
+  'workflow-states': {
+    description: 'Manage customizable task workflow states',
+    commands: {
+      list: { description: 'List workflow states', method: 'GET', path: '/task-workflow-states' },
+      create: { description: 'Create or update a workflow state', method: 'POST', path: '/task-workflow-states' },
+      delete: { description: 'Delete a workflow state (or pass --query reset=true to restore defaults)', method: 'DELETE', path: '/task-workflow-states' },
+    },
+  },
+  'config-versions': {
+    description: 'Inspect and restore configuration version history',
+    commands: {
+      list: { description: 'List versions for an entity (--query entityKind=agent,entityId=...)', method: 'GET', path: '/config-versions' },
+      restore: { description: 'Restore an entity to a prior version', method: 'POST', path: '/config-versions/restore' },
+    },
+  },
+  'cost-attribution': {
+    description: 'Aggregate cost by billing-code tags',
+    commands: {
+      'by-code': { description: 'Roll up cost by billing code (--query codes=foo,bar,range=7d)', method: 'GET', path: '/usage/by-code' },
+    },
+  },
+  'chatroom-policy': {
+    description: 'Configure chatroom delegation refusal policies',
+    commands: {
+      set: { description: 'Set onRefusal policy for a chatroom', method: 'POST', path: '/chatrooms/refusal-policy' },
+      simulate: { description: 'Simulate a refusal-handling decision', method: 'PUT', path: '/chatrooms/refusal-policy' },
+    },
+  },
+  missions: {
+    description: 'Manage autonomous missions',
+    commands: {
+      list: { description: 'List autonomous missions', method: 'GET', path: '/missions' },
+      get: { description: 'Get a mission by id', method: 'GET', path: '/missions/:id', params: ['id'] },
+      create: { description: 'Create an autonomous mission', method: 'POST', path: '/missions' },
+      update: { description: 'Update a mission', method: 'PUT', path: '/missions/:id', params: ['id'], body: true },
+      delete: { description: 'Delete a mission', method: 'DELETE', path: '/missions/:id', params: ['id'] },
+      control: { description: 'Start, pause, resume, cancel, complete, or fail a mission', method: 'POST', path: '/missions/:id/control', params: ['id'] },
+      reports: { description: 'List mission reports', method: 'GET', path: '/missions/:id/reports', params: ['id'] },
+      'report-now': { description: 'Force-generate a mission report now', method: 'POST', path: '/missions/:id/reports', params: ['id'] },
+      events: { description: 'List mission events', method: 'GET', path: '/missions/:id/events', params: ['id'] },
+      templates: { description: 'List built-in mission templates', method: 'GET', path: '/missions/templates' },
+      instantiate: { description: 'Create a mission from a template', method: 'POST', path: '/missions/templates/:id/instantiate', params: ['id'], body: true },
     },
   },
 }

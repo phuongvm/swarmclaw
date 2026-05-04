@@ -9,7 +9,10 @@ directories:
 extraMetadata:
   main: electron-dist/main.js
 
+afterPack: ./scripts/electron-after-pack.cjs
+
 asar: true
+npmRebuild: false
 
 files:
   - electron-dist/**/*
@@ -24,6 +27,8 @@ extraResources:
     filter:
       - '**/*'
       - '!**/*.map'
+  - from: resources/icon.png
+    to: icon.png
 
 publish:
   provider: github
@@ -45,8 +50,11 @@ mac:
   icon: resources/icon.icns
   hardenedRuntime: false
   gatekeeperAssess: false
-  identity: null
-  # Unsigned builds. Users open via right-click, then Open, on first launch.
+  identity: '-'
+  # Ad-hoc signed, not notarized. macOS quarantine may still flag the dmg as
+  # "damaged" on first download; users can clear it with:
+  #   xattr -dr com.apple.quarantine /Applications/SwarmClaw.app
+  # Proper Developer ID signing + notarization is tracked as a future item.
 
 win:
   target:

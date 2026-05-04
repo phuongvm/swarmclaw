@@ -3,32 +3,10 @@
  * Isomorphic — no 'use client', no server imports.
  */
 
-export type SetupProvider =
-  | 'claude-cli'
-  | 'codex-cli'
-  | 'opencode-cli'
-  | 'gemini-cli'
-  | 'copilot-cli'
-  | 'droid-cli'
-  | 'cursor-cli'
-  | 'qwen-code-cli'
-  | 'goose'
-  | 'anthropic'
-  | 'openai'
-  | 'openrouter'
-  | 'google'
-  | 'deepseek'
-  | 'groq'
-  | 'together'
-  | 'mistral'
-  | 'xai'
-  | 'fireworks'
-  | 'nebius'
-  | 'deepinfra'
-  | 'ollama'
-  | 'openclaw'
-  | 'hermes'
-  | 'custom'
+import { CLI_PROVIDER_METADATA, type CliProviderId, type CliProviderMetadata } from './providers/cli-provider-metadata.ts'
+import type { ProviderType } from '../types/provider.ts'
+
+export type SetupProvider = ProviderType | 'custom'
 
 export interface SetupProviderOption {
   id: SetupProvider
@@ -47,97 +25,40 @@ export interface SetupProviderOption {
   icon: string
   modelLibraryUrl?: string
   cloudEndpoint?: string
+  category?: 'cli' | 'api' | 'gateway' | 'local' | 'custom'
 }
 
+const CLI_SETUP_PROVIDERS: SetupProviderOption[] = (CLI_PROVIDER_METADATA as readonly CliProviderMetadata[]).map((provider) => ({
+  id: provider.id,
+  name: provider.displayName,
+  description: provider.description,
+  requiresKey: false,
+  supportsEndpoint: false,
+  optionalKey: provider.optionalApiKey,
+  keyUrl: provider.keyUrl,
+  keyLabel: provider.keyLabel,
+  keyPlaceholder: provider.keyPlaceholder,
+  badge: provider.setupBadge,
+  icon: provider.icon,
+  modelLibraryUrl: provider.modelLibraryUrl,
+  category: 'cli',
+}))
+
 export const SETUP_PROVIDERS: SetupProviderOption[] = [
+  ...CLI_SETUP_PROVIDERS,
   {
-    id: 'claude-cli',
-    name: 'Claude Code CLI',
-    description: 'Anthropic’s coding agent with native tools, strong edits, and first-class CLI workflows.',
+    id: 'opencode-web',
+    name: 'OpenCode Web',
+    description: 'Connect to a remote OpenCode HTTP server (`opencode serve` or `opencode web`). Supports HTTPS and HTTP Basic Auth.',
     requiresKey: false,
-    supportsEndpoint: false,
-    badge: 'CLI',
-    icon: 'C',
-    modelLibraryUrl: 'https://docs.anthropic.com/en/docs/about-claude/models',
-  },
-  {
-    id: 'codex-cli',
-    name: 'OpenAI Codex CLI',
-    description: 'OpenAI’s terminal coding agent with resume support and structured headless output.',
-    requiresKey: false,
-    supportsEndpoint: false,
-    badge: 'CLI',
-    icon: 'O',
-    modelLibraryUrl: 'https://platform.openai.com/docs/models',
-  },
-  {
-    id: 'opencode-cli',
-    name: 'OpenCode CLI',
-    description: 'A flexible coding CLI that can route across multiple model backends.',
-    requiresKey: false,
-    supportsEndpoint: false,
-    badge: 'CLI',
-    icon: 'O',
-  },
-  {
-    id: 'gemini-cli',
-    name: 'Gemini CLI',
-    description: 'Google’s terminal coding agent with project-aware headless mode and resume support.',
-    requiresKey: false,
-    supportsEndpoint: false,
-    badge: 'CLI',
-    icon: 'G',
-    modelLibraryUrl: 'https://ai.google.dev/gemini-api/docs/models',
-  },
-  {
-    id: 'copilot-cli',
-    name: 'GitHub Copilot CLI',
-    description: 'GitHub’s multi-model terminal agent for coding and automation.',
-    requiresKey: false,
-    supportsEndpoint: false,
-    badge: 'CLI',
-    icon: 'P',
-  },
-  {
-    id: 'droid-cli',
-    name: 'Factory Droid CLI',
-    description: 'Factory.ai’s terminal coding agent with headless exec mode, session resume, and autonomy controls.',
-    requiresKey: false,
-    supportsEndpoint: false,
     optionalKey: true,
-    keyUrl: 'https://app.factory.ai/settings/api-keys',
-    keyLabel: 'app.factory.ai',
-    keyPlaceholder: 'FACTORY_API_KEY (optional if signed in via `droid`)',
-    badge: 'CLI',
-    icon: 'F',
-  },
-  {
-    id: 'cursor-cli',
-    name: 'Cursor Agent CLI',
-    description: 'Cursor’s terminal agent with resume support, JSON output, and Cursor-native coding workflows.',
-    requiresKey: false,
-    supportsEndpoint: false,
-    badge: 'CLI',
-    icon: 'U',
-  },
-  {
-    id: 'qwen-code-cli',
-    name: 'Qwen Code CLI',
-    description: 'Qwen’s terminal coding agent with structured headless mode and multi-provider model config.',
-    requiresKey: false,
-    supportsEndpoint: false,
-    badge: 'CLI',
-    icon: 'Q',
-  },
-  {
-    id: 'goose',
-    name: 'Goose',
-    description: 'A runtime-managed terminal agent with extensions, session history, and ACP support.',
-    requiresKey: false,
-    supportsEndpoint: false,
-    optionalKey: true,
-    badge: 'Runtime',
-    icon: 'G',
+    supportsEndpoint: true,
+    defaultEndpoint: 'http://localhost:4096',
+    keyLabel: 'username:password (Basic Auth)',
+    keyPlaceholder: 'opencode:••••••• (or just the password)',
+    badge: 'HTTP',
+    icon: 'O',
+    category: 'cli',
   },
   {
     id: 'openai',
@@ -176,6 +97,7 @@ export const SETUP_PROVIDERS: SetupProviderOption[] = [
     optionalKey: true,
     badge: 'First-Tier',
     icon: 'C',
+    category: 'gateway',
   },
   {
     id: 'hermes',
@@ -188,6 +110,7 @@ export const SETUP_PROVIDERS: SetupProviderOption[] = [
     optionalKey: true,
     badge: 'API Server',
     icon: 'H',
+    category: 'gateway',
   },
   {
     id: 'anthropic',
@@ -313,6 +236,7 @@ export const SETUP_PROVIDERS: SetupProviderOption[] = [
     icon: 'L',
     modelLibraryUrl: 'https://ollama.com/library',
     cloudEndpoint: 'https://api.ollama.com',
+    category: 'local',
   },
   {
     id: 'custom',
@@ -323,6 +247,7 @@ export const SETUP_PROVIDERS: SetupProviderOption[] = [
     allowMultiple: true,
     optionalKey: true,
     icon: '+',
+    category: 'custom',
   },
 ]
 
@@ -347,6 +272,8 @@ export const STARTER_AGENT_TOOLS = [
   'codex_cli',
   'opencode_cli',
   'gemini_cli',
+  'copilot_cli',
+  'droid_cli',
   'cursor_cli',
   'qwen_code_cli',
   'openclaw_workspace',
@@ -531,8 +458,52 @@ const BUILDER_AGENT_TOOLS = [
   'codex_cli',
   'opencode_cli',
   'gemini_cli',
+  'copilot_cli',
+  'droid_cli',
   'cursor_cli',
   'qwen_code_cli',
+]
+
+const INBOX_TRIAGE_PROMPT = `You are an inbox triage copilot inside SwarmClaw.
+
+Primary objective:
+- Sort incoming email, messages, and notifications so the user only sees what needs their attention.
+
+Behavior:
+- Classify items by urgency, topic, and whether they need a reply.
+- Draft short reply candidates for the user to approve when appropriate.
+- Surface clear summaries and action lists instead of raw firehose.
+- Stop and ask the user before sending on their behalf.`
+
+const DATA_ANALYST_PROMPT = `You are a data analyst inside SwarmClaw.
+
+Primary objective:
+- Help the user explore, clean, and summarize data, producing concise findings and charts when useful.
+
+Behavior:
+- Prefer working in a shell (python/pandas) or via files, showing intermediate results.
+- State the question before computing, and flag limitations or assumptions.
+- Summarize insights with simple prose plus key numbers.
+- When useful, save artifacts (CSV, markdown, PNG) to the working directory.`
+
+const INBOX_AGENT_TOOLS = [
+  'memory',
+  'files',
+  'web_search',
+  'web_fetch',
+  'email',
+  'manage_tasks',
+  'manage_documents',
+]
+
+const DATA_ANALYST_TOOLS = [
+  'memory',
+  'files',
+  'execute',
+  'web_search',
+  'web_fetch',
+  'manage_tasks',
+  'manage_documents',
 ]
 
 const OPERATOR_AGENT_TOOLS = STARTER_AGENT_TOOLS
@@ -703,6 +674,40 @@ export const STARTER_KITS: StarterKit[] = [
     ],
   },
   {
+    id: 'inbox_triage',
+    name: 'Inbox Triager',
+    description: 'A single agent that sorts and summarizes your inbox.',
+    detail: 'Good when messages pile up faster than you can read them. Pairs well with the email connector.',
+    recommendedFor: ['intent', 'manual'],
+    agents: [
+      {
+        id: 'triager',
+        name: 'Triager',
+        description: 'Triages inbound messages into urgent, reply-needed, and informational buckets.',
+        systemPrompt: INBOX_TRIAGE_PROMPT,
+        tools: INBOX_AGENT_TOOLS,
+        capabilities: ['triage', 'summarization', 'drafting'],
+      },
+    ],
+  },
+  {
+    id: 'data_analyst',
+    name: 'Data Analyst',
+    description: 'A single agent focused on exploring and summarizing data.',
+    detail: 'Useful for ad-hoc analysis, CSV crunching, and producing concise findings with charts.',
+    recommendedFor: ['intent', 'manual'],
+    agents: [
+      {
+        id: 'analyst',
+        name: 'Analyst',
+        description: 'Runs exploratory analyses, cleans datasets, and writes short summaries with key numbers.',
+        systemPrompt: DATA_ANALYST_PROMPT,
+        tools: DATA_ANALYST_TOOLS,
+        capabilities: ['analysis', 'summarization', 'visualization'],
+      },
+    ],
+  },
+  {
     id: 'blank_workspace',
     name: 'Blank Workspace',
     description: 'Finish setup without starter agents.',
@@ -721,68 +726,24 @@ export interface DefaultAgentConfig {
   tools: string[]
 }
 
-export const DEFAULT_AGENTS: Record<SetupProvider, DefaultAgentConfig> = {
-  'claude-cli': {
-    name: 'Claude CLI',
-    description: 'A helpful assistant powered by Claude Code CLI.',
+const CLI_DEFAULT_AGENTS = Object.fromEntries(CLI_PROVIDER_METADATA.map((provider) => [
+  provider.id,
+  {
+    name: provider.displayName.endsWith(' CLI') ? provider.displayName.slice(0, -4) : provider.displayName,
+    description: `A helpful assistant powered by ${provider.displayName}.`,
     systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'claude-sonnet-4-6',
+    model: provider.defaultModel,
     tools: STARTER_AGENT_TOOLS,
   },
-  'codex-cli': {
-    name: 'Codex CLI',
-    description: 'A helpful assistant powered by OpenAI Codex CLI.',
+])) as Record<CliProviderId, DefaultAgentConfig>
+
+export const DEFAULT_AGENTS = {
+  ...CLI_DEFAULT_AGENTS,
+  'opencode-web': {
+    name: 'OpenCode Web',
+    description: 'A helpful assistant powered by a remote OpenCode HTTP server.',
     systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'gpt-5.3-codex',
-    tools: STARTER_AGENT_TOOLS,
-  },
-  'opencode-cli': {
-    name: 'OpenCode',
-    description: 'A helpful assistant powered by OpenCode CLI.',
-    systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'claude-sonnet-4-6',
-    tools: STARTER_AGENT_TOOLS,
-  },
-  'gemini-cli': {
-    name: 'Gemini CLI',
-    description: 'A helpful assistant powered by Gemini CLI.',
-    systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'gemini-2.5-pro',
-    tools: STARTER_AGENT_TOOLS,
-  },
-  'copilot-cli': {
-    name: 'Copilot CLI',
-    description: 'A helpful assistant powered by GitHub Copilot CLI.',
-    systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'claude-sonnet-4-5',
-    tools: STARTER_AGENT_TOOLS,
-  },
-  'droid-cli': {
-    name: 'Factory Droid',
-    description: 'A helpful assistant powered by Factory Droid CLI.',
-    systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'default',
-    tools: STARTER_AGENT_TOOLS,
-  },
-  'cursor-cli': {
-    name: 'Cursor CLI',
-    description: 'A helpful assistant powered by Cursor Agent CLI.',
-    systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'auto',
-    tools: STARTER_AGENT_TOOLS,
-  },
-  'qwen-code-cli': {
-    name: 'Qwen Code',
-    description: 'A helpful assistant powered by Qwen Code CLI.',
-    systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'default',
-    tools: STARTER_AGENT_TOOLS,
-  },
-  goose: {
-    name: 'Goose',
-    description: 'A helpful assistant powered by Goose.',
-    systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'default',
+    model: 'anthropic/claude-sonnet-4-6',
     tools: STARTER_AGENT_TOOLS,
   },
   anthropic: {
@@ -796,21 +757,21 @@ export const DEFAULT_AGENTS: Record<SetupProvider, DefaultAgentConfig> = {
     name: 'Atlas',
     description: 'A helpful GPT-powered assistant.',
     systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'gpt-4o',
+    model: 'gpt-5.4',
     tools: STARTER_AGENT_TOOLS,
   },
   openrouter: {
     name: 'Router',
     description: 'A helpful assistant powered through OpenRouter.',
     systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'openai/gpt-4.1-mini',
+    model: 'anthropic/claude-sonnet-4.6',
     tools: STARTER_AGENT_TOOLS,
   },
   google: {
     name: 'Gemini',
     description: 'A helpful Gemini-powered assistant.',
     systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'gemini-2.5-pro',
+    model: 'gemini-3.1-pro',
     tools: STARTER_AGENT_TOOLS,
   },
   deepseek: {
@@ -824,7 +785,7 @@ export const DEFAULT_AGENTS: Record<SetupProvider, DefaultAgentConfig> = {
     name: 'Bolt',
     description: 'A low-latency assistant powered by Groq.',
     systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'llama-3.3-70b-versatile',
+    model: 'meta-llama/llama-4-maverick-17b-128e-instruct',
     tools: STARTER_AGENT_TOOLS,
   },
   together: {
@@ -845,28 +806,28 @@ export const DEFAULT_AGENTS: Record<SetupProvider, DefaultAgentConfig> = {
     name: 'Grok',
     description: 'A helpful assistant powered by xAI Grok.',
     systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'grok-3',
+    model: 'grok-4',
     tools: STARTER_AGENT_TOOLS,
   },
   fireworks: {
     name: 'Spark',
     description: 'A helpful assistant powered by Fireworks AI.',
     systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'accounts/fireworks/models/deepseek-r1-0528',
+    model: 'accounts/fireworks/models/deepseek-v3p2',
     tools: STARTER_AGENT_TOOLS,
   },
   nebius: {
     name: 'Nebius Agent',
     description: 'A helpful assistant powered by Nebius.',
     systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'deepseek-ai/DeepSeek-R1-0528',
+    model: 'deepseek-ai/DeepSeek-V3.2',
     tools: STARTER_AGENT_TOOLS,
   },
   deepinfra: {
     name: 'DeepInfra Agent',
     description: 'A helpful assistant powered by DeepInfra.',
     systemPrompt: SWARMCLAW_ASSISTANT_PROMPT,
-    model: 'deepseek-ai/DeepSeek-R1-0528',
+    model: 'deepseek-ai/DeepSeek-V3.2',
     tools: STARTER_AGENT_TOOLS,
   },
   ollama: {
@@ -897,7 +858,7 @@ export const DEFAULT_AGENTS: Record<SetupProvider, DefaultAgentConfig> = {
     model: '',
     tools: STARTER_AGENT_TOOLS,
   },
-}
+} satisfies Record<SetupProvider, DefaultAgentConfig>
 
 export function getDefaultModelForProvider(provider: SetupProvider): string {
   return DEFAULT_AGENTS[provider].model

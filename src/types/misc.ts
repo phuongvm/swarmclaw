@@ -54,6 +54,8 @@ export interface UsageRecord {
   durationMs?: number
   agentId?: string | null
   projectId?: string | null
+  /** Billing/attribution tags rolled up into per-code cost reports. */
+  billingCodes?: string[]
   extensionDefinitionCosts?: ExtensionDefinitionCost[]
   extensionInvocations?: ExtensionInvocationRecord[]
 }
@@ -118,6 +120,16 @@ export interface Chatroom {
   archivedAt?: number | null
   protocolRunId?: string | null
   parentChatroomId?: string | null
+  /**
+   * Policy applied when a delegated agent refuses or returns a refusal token.
+   * - reroute: re-run routing (skipping the refusing agent) to pick another candidate
+   * - escalate: bubble to the agent's `escalationTargetAgentId`, falling back to chatroom owner
+   * - human: surface to a human via approval gate
+   * Defaults to `reroute` when unset.
+   */
+  onRefusal?: 'reroute' | 'escalate' | 'human' | null
+  /** Optional human/operator agent id used as the final escalation target. */
+  escalationTargetAgentId?: string | null
   createdAt: number
   updatedAt: number
 }
@@ -613,9 +625,17 @@ export interface McpServerConfig {
   transport: McpTransport
   command?: string             // for stdio transport
   args?: string[]              // for stdio transport
+  cwd?: string                 // working directory for stdio transport (e.g. SwarmVault vault dir)
   url?: string                 // for sse/streamable-http transport
   env?: Record<string, string> // environment variables
   headers?: Record<string, string> // HTTP headers for sse/streamable-http
+  // Tool-exposure policy — lets users cut token spend from chatty MCP servers.
+  // - true (default, back-compat)   → every tool is bound on every turn
+  // - false                         → no tools bound; agent uses mcp_tool_search to promote them
+  // - string[] (allow-list)         → only tools whose names appear here are bound eagerly
+  // Regardless of this setting, tools the agent has promoted via mcp_tool_search in the
+  // current session are bound too. And per-agent mcpEagerTools provide an explicit override.
+  alwaysExpose?: boolean | string[]
   createdAt: number
   updatedAt: number
 }

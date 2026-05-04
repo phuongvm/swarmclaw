@@ -65,6 +65,40 @@ type MemoryActionContext = Partial<Session> & {
 
 type MemorySearchSource = 'durable' | 'working' | 'archive' | 'all'
 type NarrowMemoryAction = 'search' | 'get' | 'store' | 'update'
+
+// Heuristic for detecting queries that actually refer to the current chat
+// thread, not durable memory. Phrases like "just", "last reply", "both"
+// (without any "yesterday/last week/before/earlier conversation" qualifier)
+// are almost always pronouns targeting the visible thread. Small open-source
+// models routinely run memory_search for these and then truthfully report
+// "no memories found" even though the answer is three messages up.
+const THREAD_RECALL_SIGNALS = [
+  /\bjust\b/i,
+  /\blast reply\b/i,
+  /\bmy last\b/i,
+  /\byour last\b/i,
+  /\bprevious (reply|answer|response|message)\b/i,
+  /\babove\b/i,
+  /\bwhat (i|you) (just|last) (said|asked|answered|gave|told)\b/i,
+  /\b(both|two|all) (answers|numbers|replies|responses)\b/i,
+  /\bthe (answer|number|result) you (just|last) (gave|said)\b/i,
+]
+const PRIOR_CONVERSATION_SIGNALS = [
+  /\byesterday\b/i,
+  /\blast (week|month|year|time)\b/i,
+  /\bearlier (today|conversation|session|chat)\b/i,
+  /\bbefore we\b/i,
+  /\bremember (that|when|the time)\b/i,
+  /\bin a (previous|prior) (chat|session|conversation)\b/i,
+]
+function isLikelyThreadRecallQuery(query: string): boolean {
+  if (typeof query !== 'string' || !query.trim()) return false
+  // If the user explicitly mentions a prior conversation/session, it's NOT
+  // a thread recall — let memory_search run normally.
+  if (PRIOR_CONVERSATION_SIGNALS.some((rx) => rx.test(query))) return false
+  return THREAD_RECALL_SIGNALS.some((rx) => rx.test(query))
+}
+
 type CanonicalMemoryCandidate = {
   entry: MemoryEntry
   score: number
@@ -567,6 +601,15 @@ export async function executeMemoryAction(input: unknown, ctx: MemoryActionConte
   }
 
   if (resolvedAction === 'search') {
+    // Short-circuit when the query obviously refers to something in the
+    // current chat thread (e.g. "both answers I just got", "your last reply",
+    // "what I just said"). Small open-source models repeatedly call
+    // memory_search for this pattern instead of reading the thread above,
+    // then truthfully report "no memories found" even though the answer is
+    // three messages up. Redirect them back to the thread.
+    if (queryText && isLikelyThreadRecallQuery(queryText)) {
+      return 'No stored memories match this query, and the phrasing looks like a reference to the current chat thread (e.g. "just", "last reply", "both"). The information is already in the conversation history above — read the prior messages in this thread to answer instead of searching memory.'
+    }
     const queries = queryText ? await expandQuery(queryText) : [keyText]
     const allResults: MemoryEntry[] = []
     const seenIds = new Set<string>()

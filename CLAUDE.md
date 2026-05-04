@@ -99,6 +99,18 @@ Three boundary kinds:
 
 Resolved in `resolveSuccessfulTerminalToolBoundary()` (`src/lib/server/chat-execution/chat-streaming-utils.ts`). Only mark a new tool as terminal if it genuinely needs to end the turn — most tools should not be terminal.
 
+### Stripping Internal Markers from Assistant Output
+
+**When an LLM emits structured tokens that should not be visible to the user (e.g. side-channel classifier JSON like `{"factsUpsert":[...]}`, control tokens like `[REACTION]{...}`, or meta lines like `[AGENT_HEARTBEAT_META]{...}`), strip them with a balanced-brace walker + zod schema validation, not raw regex.** Regex breaks on nested JSON, multiline payloads, and innocent text that happens to look like a marker.
+
+The pattern:
+1. Define a **zod schema** for each known internal payload (or reuse the existing one — `WorkingStatePatchSchema`, `MessageClassificationSchema`, `ResponseCompletenessSchema`).
+2. Pair each schema with a list of **distinctive keys** that must be present (so a benign user JSON like `{"port":3000}` isn't false-stripped).
+3. Walk the text byte-by-byte to find balanced `{...}` blocks (a tiny `findBalancedJsonObjectEnd` helper handles strings, escapes, and nesting). Try `JSON.parse` on each candidate.
+4. If the parsed object has at least one distinctive key AND `schema.safeParse(obj).success` is true, remove that span.
+
+Reference implementations: `stripMainLoopMetaForPersistence` (`src/lib/server/agents/main-agent-loop.ts`) and `stripAgentReactionTokens` (`src/lib/server/chatrooms/chatroom-agent-signals.ts`). When you add a new internal payload shape, add a rule to `INTERNAL_PAYLOAD_RULES` in `main-agent-loop.ts` rather than writing a new strip function.
+
 ### Storage: Load-Modify-Save
 
 **`saveCollection()` silently blocks bulk deletes.** If the save would delete more rows than it upserts, the guard prevents it and logs a warning. This protects against accidentally wiping a collection by saving a partial record set.
@@ -111,6 +123,18 @@ The correct pattern:
 For single-item updates, use `upsertCollectionItem()` instead — it doesn't trigger the bulk-delete guard.
 
 **Normalization on load:** `storage-normalization.ts` auto-migrates records when they're loaded, applying default values for new fields. When you add a new field to a stored type, add its default to the normalization function — don't rely on `undefined` checks scattered across the codebase.
+
+### Missions (Autonomous Goal-Driven Runs)
+
+Missions wrap a session with a goal, budgets, a milestone log, and periodic reports. They are the first-class way users hand off long-running autonomous work. A Mission always has exactly one `rootSessionId` that drives it through the existing heartbeat pipeline.
+
+**Storage tables**: `agent_missions`, `mission_reports`, `agent_mission_events`. The legacy deprecated `missions` table is untouched. All mission-specific repository and service code lives in `src/lib/server/missions/`.
+
+**Budget enforcement**: `enqueueSessionRun` consults `checkMissionBudgetForSession(session.missionId)` on every autonomous-managed enqueue (anything that is not a direct user chat). When a cap is hit the mission transitions to `budget_exhausted`, the queue drains, and a final report fires. User-initiated chats bypass the check so the user can still talk to a mission session mid-run. Caps enforced today: USD, tokens, turns, wallclock.
+
+**Scheduler**: `runMissionScheduler()` is called from the top of `tickHeartbeats()` every minute, independent of the heartbeat active-hours window. It enforces wallclock budgets and dispatches `reportSchedule` reports. The scheduler uses `hmrSingleton` for state so it survives HMR.
+
+**Nested patch pitfall**: when writing mission service code, never call `appendMissionMilestone` inside a `patchMission` updater closure. The inner patch reads a stale snapshot and clobbers the outer write. Collect the milestone intent during the patch, call `appendMissionMilestone` after the patch returns. See `recordTurnUsage` in `mission-service.ts` for the pattern.
 
 ### Desktop App (Electron)
 

@@ -344,10 +344,17 @@ export function buildAgenticExecutionPolicy(opts: {
   if (hasTooling) {
     parts.push(
       '## Routing Matrix',
+      // Smaller open-source models (observed with devstral-small-2:24b) routinely
+      // ignore a terse "use the thread first" line and call `memory_search`
+      // whenever a user message contains referential words like "that", "those",
+      // "both", "my last", "your previous". Spell out the boundary explicitly
+      // so compliance is consistent regardless of model size.
       'Current-thread facts already visible in this chat: answer directly from the thread before using tools.',
+      'References in the user\'s message to things from THIS conversation — e.g. "that", "those", "both", "your last reply", "the number you gave", "what I just said" — are already in the thread history above. Read the prior messages to answer. Do NOT call `memory_search`, `sessions_tool`, or any recall tool for these.',
+      'Only use memory or session-history tools when the user explicitly asks about a PRIOR conversation ("what did we discuss yesterday", "remember when I told you X last week") or names something not present in the current thread.',
       hasMemoryTools
-        ? 'Facts from previous conversations: start with `memory_search`, then `memory_get` only for a targeted follow-up read.'
-        : 'Facts from previous conversations: rely on the visible thread only and state when memory tools are unavailable.',
+        ? 'Facts from previous conversations (not this thread): start with `memory_search`, then `memory_get` only for a targeted follow-up read.'
+        : 'Facts from previous conversations (not this thread): rely on the visible thread only and state when memory tools are unavailable.',
       hasManageSessions
         ? 'Harness/session context, lineage, project attachment, or enabled-tool questions: use `sessions_tool` action `identity`.'
         : 'Harness/session introspection is limited here; rely on the runtime orientation block and visible context.',
@@ -450,7 +457,10 @@ export function buildAgenticExecutionPolicy(opts: {
       const exactStructureBlock = buildExactStructureBlock(opts.userMessage)
       if (exactStructureBlock) parts.push(exactStructureBlock)
     }
-    if (opts.userMessage && isCurrentThreadRecallRequest(opts.userMessage)) {
+    // Delegate to isCurrentThreadRecallRequest which internally prefers the
+    // LLM classifier's judgment and falls back to regex only when classifier
+    // is unavailable.
+    if (opts.userMessage && isCurrentThreadRecallRequest(opts.userMessage, opts.classification ?? null)) {
       parts.push(buildCurrentThreadRecallBlock(opts.history || []))
     }
   }

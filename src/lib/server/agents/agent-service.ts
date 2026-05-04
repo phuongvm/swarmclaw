@@ -16,6 +16,7 @@ import {
   saveAgent,
 } from '@/lib/server/agents/agent-repository'
 import { logActivity } from '@/lib/server/activity/activity-log'
+import { snapshotVersion } from '@/lib/server/config-versions/config-version-repository'
 import { getAgentSpendWindows } from '@/lib/server/cost'
 import { serviceFail, serviceOk } from '@/lib/server/service-result'
 import { listSessions, saveSession } from '@/lib/server/sessions/session-repository'
@@ -177,6 +178,7 @@ export function createAgent(input: {
     memoryTierPreference: (body.memoryTierPreference as Agent['memoryTierPreference']) || undefined,
     proactiveMemory: body.proactiveMemory !== false,
     autoDraftSkillSuggestions: body.autoDraftSkillSuggestions as Agent['autoDraftSkillSuggestions'],
+    planningMode: (body.planningMode as Agent['planningMode']) ?? null,
     projectId: typeof body.projectId === 'string' && body.projectId.trim() ? body.projectId.trim() : undefined,
     avatarSeed: typeof body.avatarSeed === 'string' ? body.avatarSeed : undefined,
     avatarUrl: typeof body.avatarUrl === 'string' ? body.avatarUrl : undefined,
@@ -205,13 +207,23 @@ export function createAgent(input: {
 }
 
 export function updateAgent(agentId: string, body: Record<string, unknown>): Agent | null {
+  let preUpdateSnapshot: Agent | null = null
   const updated = patchAgent(agentId, (current) => {
     if (!current) return null
+    if (!preUpdateSnapshot) preUpdateSnapshot = current
+    if (body.projectId === undefined && Array.isArray(body.projectIds) && body.projectIds.length > 0) {
+      const first = body.projectIds[0]
+      if (typeof first === 'string' && first.trim()) {
+        body.projectId = first.trim()
+      }
+    }
     const agent = { ...current, ...body, updatedAt: Date.now() }
     if (body.tools !== undefined || body.extensions !== undefined) {
+      // Fall back to `current` (pre-spread) so a non-array body value does not
+      // clobber the existing list via `{...current, ...body}` above.
       const nextSelection = normalizeCapabilitySelection({
-        tools: Array.isArray(body.tools) ? body.tools : agent.tools,
-        extensions: Array.isArray(body.extensions) ? body.extensions : agent.extensions,
+        tools: Array.isArray(body.tools) ? body.tools : current.tools,
+        extensions: Array.isArray(body.extensions) ? body.extensions : current.extensions,
       })
       agent.tools = nextSelection.tools
       agent.extensions = nextSelection.extensions
@@ -308,6 +320,19 @@ export function updateAgent(agentId: string, body: Record<string, unknown>): Age
     return agent as Agent
   })
   if (!updated) return null
+
+  if (preUpdateSnapshot) {
+    try {
+      snapshotVersion({
+        entityKind: 'agent',
+        entityId: agentId,
+        snapshot: preUpdateSnapshot as unknown as Record<string, unknown>,
+        actor: 'user',
+      })
+    } catch (err) {
+      log.warn('agent-service', `Config version snapshot failed for agent ${agentId}: ${err instanceof Error ? err.message : err}`)
+    }
+  }
 
   if (updated.threadSessionId) {
     ensureAgentThreadSession(agentId)

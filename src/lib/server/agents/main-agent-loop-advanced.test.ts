@@ -668,6 +668,42 @@ describe('main-agent-loop advanced', () => {
     assert.equal(result, '')
   })
 
+  it('stripMainLoopMetaForPersistence strips trailing factsUpsert / isIncomplete blobs glued to assistant text', () => {
+    const input = 'The 8th Fibonacci number is **13**.{"isIncomplete": false, "confidence": 1.0}{"factsUpsert":[{"statement":"The 8th Fibonacci number is 13.","source":"assistant","status":"active","evidenceIds":[]}]}'
+    const result = stripMainLoopMetaForPersistence(input)
+    assert.ok(!result.includes('factsUpsert'), 'factsUpsert payload removed')
+    assert.ok(!result.includes('isIncomplete'), 'isIncomplete payload removed')
+    assert.ok(result.includes('The 8th Fibonacci number is **13**.'), 'visible answer preserved')
+  })
+
+  it('stripMainLoopMetaForPersistence preserves benign user-facing JSON snippets', () => {
+    const benign = [
+      'Here is the example config you asked for:',
+      '{"port":3000,"host":"localhost","tls":{"enabled":true}}',
+      'And a smaller variant:',
+      '{"status":"ok","goal":"render"}',
+      '{"confidence":0.9,"score":0.7}',
+    ].join('\n')
+    const result = stripMainLoopMetaForPersistence(benign)
+    assert.ok(result.includes('"port":3000'), 'config block preserved')
+    assert.ok(result.includes('"status":"ok"'), 'status snippet preserved')
+    assert.ok(result.includes('"confidence":0.9,"score":0.7'), 'confidence-only blob preserved')
+  })
+
+  it('stripMainLoopMetaForPersistence strips multi-line working-state JSON', () => {
+    const input = [
+      'Here is the answer.',
+      '{',
+      '  "factsUpsert": [',
+      '    { "statement": "x", "source": "assistant", "status": "active", "evidenceIds": [] }',
+      '  ]',
+      '}',
+    ].join('\n')
+    const result = stripMainLoopMetaForPersistence(input)
+    assert.ok(!result.includes('factsUpsert'), 'multi-line blob removed')
+    assert.ok(result.includes('Here is the answer.'), 'visible answer preserved')
+  })
+
   // ─────────────────────────────────────────────────────────────────────
   // 9. Status transitions (direct import via subprocess for state access)
   // ─────────────────────────────────────────────────────────────────────

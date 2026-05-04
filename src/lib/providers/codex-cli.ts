@@ -5,7 +5,9 @@ import { spawn } from 'child_process'
 import type { StreamChatOptions } from './index'
 import { log } from '../server/logger'
 import { loadRuntimeSettings } from '@/lib/server/runtime/runtime-settings'
-import { resolveCliBinary, buildCliEnv, probeCliAuth, attachAbortHandler, symlinkConfigFiles, isStderrNoise } from './cli-utils'
+import { resolveCliBinary, buildCliEnv, probeCliAuth, attachAbortHandler, symlinkConfigFiles, isStderrNoise, ensureCliWorkingDirectory } from './cli-utils'
+import { getAgent } from '@/lib/server/agents/agent-repository'
+import { loadMcpServers } from '@/lib/server/storage'
 
 const TAG = 'provider-codex'
 
@@ -25,13 +27,19 @@ export function streamCodexCliChat({ session, message, imagePath, systemPrompt, 
 
   const prompt = message
   const args: string[] = ['exec']
+  // Use ~/.codex-sessions/ not /tmp — codex refuses to create helper binaries under /tmp.
+  const sessionsDir = path.join(os.homedir(), '.codex-sessions')
+  const perSessionHome = path.join(sessionsDir, session.id)
 
   // Session resume
   if (session.codexThreadId) {
     args.push('resume', session.codexThreadId)
   }
 
-  args.push('--json', '--full-auto', '--skip-git-repo-check')
+  // Use --dangerously-bypass-approvals-and-sandbox instead of --full-auto so that
+  // MCP tool calls are not silently cancelled by codex's approval gate.
+  // SwarmClaw runs in its own sandboxed environment so bypassing codex's sandbox is safe.
+  args.push('--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check')
 
   if (session.model) args.push('-m', session.model)
   if (codexModelRequiresReasoningDowngrade(session.model)) {
@@ -48,15 +56,16 @@ export function streamCodexCliChat({ session, message, imagePath, systemPrompt, 
 
   // Build clean env — preserves user's CODEX_HOME for auth
   const env = buildCliEnv()
+  const effectiveCwd = ensureCliWorkingDirectory(session.cwd)
 
   // Pass API key if available
   if (session.apiKey) {
     env.OPENAI_API_KEY = session.apiKey
   }
 
-  // Auth probe BEFORE creating temp CODEX_HOME — uses real config dir
+  // Auth probe BEFORE creating the session CODEX_HOME — uses real config dir
   if (!session.apiKey) {
-    const auth = probeCliAuth(binary, 'codex', env, session.cwd)
+    const auth = probeCliAuth(binary, 'codex', env, effectiveCwd)
     if (!auth.authenticated) {
       log.error('codex-cli', auth.errorMessage || 'Auth failed')
       write(`data: ${JSON.stringify({ t: 'err', text: auth.errorMessage || 'Codex CLI is not authenticated.' })}\n\n`)
@@ -64,32 +73,80 @@ export function streamCodexCliChat({ session, message, imagePath, systemPrompt, 
     }
   }
 
-  // System prompt: write temp AGENTS.override.md in a temp CODEX_HOME
-  // Symlink auth files from the real config dir so auth still works
-  let tempCodexHome: string | null = null
+  // Always use a stable per-session CODEX_HOME for the actual Codex run. A first
+  // turn can emit a thread id even without system-prompt or MCP injection, and
+  // the next turn needs the same local metadata to resume that thread.
+  const sessionCodexHome = perSessionHome
+  const agentForMcp = session.agentId ? getAgent(session.agentId as string) : null
+  const agentMcpServerIds: string[] = agentForMcp?.mcpServerIds || []
+  const realCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
+  fs.mkdirSync(sessionCodexHome, { recursive: true })
+
+  // Symlink auth/config files from real CODEX_HOME into session dir
+  symlinkConfigFiles(realCodexHome, sessionCodexHome)
+
+  // Write system prompt as AGENTS.override.md (first turn only)
   if (systemPrompt && !session.codexThreadId) {
-    const realCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
-    tempCodexHome = path.join(os.tmpdir(), `swarmclaw-codex-${session.id}`)
-    fs.mkdirSync(tempCodexHome, { recursive: true })
-
-    // Symlink auth/config files from real CODEX_HOME into temp dir
-    symlinkConfigFiles(realCodexHome, tempCodexHome)
-
-    // Write system prompt as AGENTS.override.md
-    fs.writeFileSync(path.join(tempCodexHome, 'AGENTS.override.md'), systemPrompt)
-    env.CODEX_HOME = tempCodexHome
+    fs.writeFileSync(path.join(sessionCodexHome, 'AGENTS.override.md'), systemPrompt)
   }
+
+  // Inject agent-assigned MCP servers into config.toml
+  if (agentMcpServerIds.length > 0) {
+    try {
+      const allMcpServers = loadMcpServers()
+      const tomlParts: string[] = []
+      for (const serverId of agentMcpServerIds) {
+        const config = allMcpServers[serverId]
+        if (!config) continue
+        const name = config.name.replace(/[^a-zA-Z0-9_]/g, '_')
+        if (config.transport === 'stdio' && config.command) {
+          tomlParts.push(`[mcp_servers.${name}]`)
+          tomlParts.push(`command = ${JSON.stringify(config.command)}`)
+          const argsStr = (config.args || []).map((a: string) => JSON.stringify(a)).join(', ')
+          tomlParts.push(`args = [${argsStr}]`)
+          if (config.cwd) tomlParts.push(`cwd = ${JSON.stringify(config.cwd)}`)
+          tomlParts.push('')
+          // Env vars go in a separate subsection: [mcp_servers.name.env]
+          if (config.env && Object.keys(config.env).length > 0) {
+            tomlParts.push(`[mcp_servers.${name}.env]`)
+            for (const [k, v] of Object.entries(config.env as Record<string, string>)) {
+              tomlParts.push(`${k} = ${JSON.stringify(v)}`)
+            }
+            tomlParts.push('')
+          }
+        } else if ((config.transport === 'sse' || config.transport === 'streamable-http') && config.url) {
+          tomlParts.push(`[mcp_servers.${name}]`)
+          tomlParts.push(`url = ${JSON.stringify(config.url)}`)
+          tomlParts.push('')
+        }
+      }
+      if (tomlParts.length > 0) {
+        const realConfigPath = path.join(realCodexHome, 'config.toml')
+        const existingConfig = fs.existsSync(realConfigPath)
+          ? fs.readFileSync(realConfigPath, 'utf-8')
+          : ''
+        const tempConfigPath = path.join(sessionCodexHome, 'config.toml')
+        // Remove symlink created by symlinkConfigFiles before writing our own file
+        try { fs.unlinkSync(tempConfigPath) } catch { /* no symlink — ignore */ }
+        fs.writeFileSync(tempConfigPath, existingConfig + '\n' + tomlParts.join('\n'))
+        log.info('codex-cli', `Injecting ${agentMcpServerIds.length} MCP server(s) via config.toml`)
+      }
+    } catch (mcpErr) {
+      log.warn('codex-cli', `Failed to build MCP config: ${mcpErr}`)
+    }
+  }
+  env.CODEX_HOME = sessionCodexHome
 
   log.info('codex-cli', `Spawning: ${binary}`, {
     args: args.map(a => a.length > 100 ? a.slice(0, 100) + '...' : a),
-    cwd: session.cwd,
+    cwd: effectiveCwd,
     promptLen: prompt.length,
     hasSystemPrompt: !!systemPrompt,
-    tempCodexHome,
+    sessionCodexHome,
   })
 
   const proc = spawn(binary, args, {
-    cwd: session.cwd,
+    cwd: effectiveCwd,
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: processTimeoutMs,
@@ -126,9 +183,14 @@ export function streamCodexCliChat({ session, message, imagePath, systemPrompt, 
         eventCount++
 
         // Track thread ID for session resume
-        if (ev.type === 'thread.started' && ev.thread_id) {
-          session.codexThreadId = ev.thread_id
-          log.info('codex-cli', `Got thread_id: ${ev.thread_id}`)
+        const threadId = typeof ev.thread_id === 'string'
+          ? ev.thread_id
+          : (typeof ev.thread?.id === 'string' ? ev.thread.id : null)
+        if (threadId) {
+          session.codexThreadId = threadId
+          if (eventCount <= 3 || ev.type === 'thread.started') {
+            log.info('codex-cli', `Got thread_id: ${threadId} (${ev.type})`)
+          }
         }
 
         // Streaming text deltas (if codex adds streaming support)
@@ -210,10 +272,6 @@ export function streamCodexCliChat({ session, message, imagePath, systemPrompt, 
     proc.on('close', (code, sig) => {
       log.info('codex-cli', `Process closed: code=${code} signal=${sig} events=${eventCount} response=${fullResponse.length}chars`)
       active.delete(session.id)
-      // Clean up temp CODEX_HOME
-      if (tempCodexHome) {
-        try { fs.rmSync(tempCodexHome, { recursive: true }) } catch { /* ignore */ }
-      }
       if ((code ?? 0) !== 0 && !fullResponse.trim()) {
         const msg = stderrText.trim()
           ? `Codex CLI exited with code ${code ?? 'unknown'}${sig ? ` (${sig})` : ''}: ${stderrText.trim().slice(0, 1200)}`
@@ -226,9 +284,6 @@ export function streamCodexCliChat({ session, message, imagePath, systemPrompt, 
     proc.on('error', (e) => {
       log.error('codex-cli', `Process error: ${e.message}`)
       active.delete(session.id)
-      if (tempCodexHome) {
-        try { fs.rmSync(tempCodexHome, { recursive: true }) } catch { /* ignore */ }
-      }
       write(`data: ${JSON.stringify({ t: 'err', text: e.message })}\n\n`)
       resolve(fullResponse)
     })

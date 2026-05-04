@@ -33,6 +33,7 @@ import {
 import { estimateCost } from '@/lib/server/cost'
 import { refreshSessionIdentityState } from '@/lib/server/identity-continuity'
 import { log } from '@/lib/server/logger'
+import { logExecution } from '@/lib/server/execution-log'
 import { syncSessionArchiveMemory } from '@/lib/server/memory/session-archive-memory'
 import { runCapabilityHook, transformCapabilityText } from '@/lib/server/native-capabilities'
 import { isHeartbeatSource } from '@/lib/server/runtime/heartbeat-source'
@@ -48,6 +49,7 @@ import {
   replaceAllMessages,
 } from '@/lib/server/messages/message-repository'
 import { appendUsage } from '@/lib/server/usage/usage-repository'
+import { resolveBillingCodesForSession } from '@/lib/server/usage/resolve-billing-codes'
 import { synchronizeWorkingStateForTurn } from '@/lib/server/working-state/service'
 import { notify } from '@/lib/server/ws-hub'
 import { selectKnowledgeCitations } from '@/lib/server/knowledge-sources'
@@ -83,6 +85,9 @@ function resolveHeartbeatLastConnectorTarget(session: Session | null | undefined
   }
 }
 
+const AUTO_DRAFT_DAILY_LIMIT = 3
+const AUTO_DRAFT_MIN_TOOL_EVENTS = 3
+
 function shouldAutoDraftSkillSuggestion(params: {
   assistantPersisted: boolean
   internal: boolean
@@ -94,8 +99,29 @@ function shouldAutoDraftSkillSuggestion(params: {
   if (!params.assistantPersisted) return false
   if (params.internal || params.isHeartbeatRun) return false
   if (!params.agentAutoDraftSetting) return false
-  if (params.toolEventCount === 0) return false
+  if (params.toolEventCount < AUTO_DRAFT_MIN_TOOL_EVENTS) return false
   return params.messageCount >= 4
+}
+
+async function isAutoDraftRateLimited(agentId: string | null): Promise<boolean> {
+  if (!agentId) return false
+  try {
+    const { loadSkillSuggestions } = await import('@/lib/server/skills/skill-repository')
+    const suggestions = loadSkillSuggestions()
+    const todayStart = new Date()
+    todayStart.setHours(0, 0, 0, 0)
+    const cutoff = todayStart.getTime()
+    let count = 0
+    for (const s of Object.values(suggestions)) {
+      if (s.sourceAgentId !== agentId) continue
+      if ((s.createdAt || 0) < cutoff) continue
+      count += 1
+      if (count >= AUTO_DRAFT_DAILY_LIMIT) return true
+    }
+    return false
+  } catch {
+    return false
+  }
 }
 
 async function resolveExactOutputContractWithTimeout(params: {
@@ -222,6 +248,7 @@ export async function finalizeChatTurn(params: {
         durationMs,
         agentId: sessionForRun.agentId || null,
         projectId: sessionForRun.projectId || null,
+        billingCodes: resolveBillingCodesForSession(sessionForRun),
       }
       appendUsage(sessionId, usageRecord)
       emit({
@@ -287,6 +314,22 @@ export async function finalizeChatTurn(params: {
         inferredError: terminalError,
       })
     }
+    logExecution(sessionId, 'error', terminalError, {
+      runId,
+      agentId: sessionForRun.agentId || null,
+      detail: {
+        provider: providerType,
+        model: sessionForRun.model,
+        streamErrors: streamErrors.length > 0 ? streamErrors : undefined,
+        source,
+        durationMs,
+        inputTokens: directUsage.received ? directUsage.inputTokens : null,
+        outputTokens: directUsage.received ? directUsage.outputTokens : null,
+        tokenUsageReceived: directUsage.received,
+        hadResponse: !!(fullResponse || '').trim(),
+        toolEventCount: toolEvents.length,
+      },
+    })
     errorMessage = terminalError
   }
 
@@ -392,18 +435,25 @@ export async function finalizeChatTurn(params: {
         ;(current as unknown as Record<string, unknown>)[key] = normalized
       }
     }
+    const preferRunValue = (runValue: unknown, fallbackValue: unknown) => (
+      runValue !== undefined ? runValue : fallbackValue
+    )
 
-    persistField('claudeSessionId', session.claudeSessionId)
-    persistField('codexThreadId', session.codexThreadId)
-    persistField('opencodeSessionId', session.opencodeSessionId)
-    persistField('geminiSessionId', session.geminiSessionId)
-    persistField('copilotSessionId', session.copilotSessionId)
-    persistField('droidSessionId', session.droidSessionId)
-    persistField('cursorSessionId', session.cursorSessionId)
-    persistField('qwenSessionId', session.qwenSessionId)
-    persistField('acpSessionId', session.acpSessionId)
+    // Provider handlers receive `sessionForRun` and may mutate CLI resume IDs there.
+    // Persist from run-session first, allowing null to intentionally clear IDs.
+    persistField('claudeSessionId', preferRunValue(sessionForRun.claudeSessionId, session.claudeSessionId))
+    persistField('codexThreadId', preferRunValue(sessionForRun.codexThreadId, session.codexThreadId))
+    persistField('opencodeSessionId', preferRunValue(sessionForRun.opencodeSessionId, session.opencodeSessionId))
+    persistField('geminiSessionId', preferRunValue(sessionForRun.geminiSessionId, session.geminiSessionId))
+    persistField('copilotSessionId', preferRunValue(sessionForRun.copilotSessionId, session.copilotSessionId))
+    persistField('droidSessionId', preferRunValue(sessionForRun.droidSessionId, session.droidSessionId))
+    persistField('cursorSessionId', preferRunValue(sessionForRun.cursorSessionId, session.cursorSessionId))
+    persistField('qwenSessionId', preferRunValue(sessionForRun.qwenSessionId, session.qwenSessionId))
+    persistField('acpSessionId', preferRunValue(sessionForRun.acpSessionId, session.acpSessionId))
 
-    const sourceResume = session.delegateResumeIds
+    const sourceResume = (sessionForRun.delegateResumeIds && typeof sessionForRun.delegateResumeIds === 'object')
+      ? sessionForRun.delegateResumeIds
+      : session.delegateResumeIds
     if (sourceResume && typeof sourceResume === 'object') {
       const currentResume = (current.delegateResumeIds && typeof current.delegateResumeIds === 'object')
         ? current.delegateResumeIds
@@ -411,14 +461,14 @@ export async function finalizeChatTurn(params: {
       const sr = sourceResume as Record<string, unknown>
       const cr = currentResume as Record<string, unknown>
       const nextResume = {
-        claudeCode: normalizeResumeId(sr.claudeCode ?? cr.claudeCode),
-        codex: normalizeResumeId(sr.codex ?? cr.codex),
-        opencode: normalizeResumeId(sr.opencode ?? cr.opencode),
-        gemini: normalizeResumeId(sr.gemini ?? cr.gemini),
-        copilot: normalizeResumeId(sr.copilot ?? cr.copilot),
-        droid: normalizeResumeId(sr.droid ?? cr.droid),
-        cursor: normalizeResumeId(sr.cursor ?? cr.cursor),
-        qwen: normalizeResumeId(sr.qwen ?? cr.qwen),
+        claudeCode: normalizeResumeId(preferRunValue(sr.claudeCode, cr.claudeCode)),
+        codex: normalizeResumeId(preferRunValue(sr.codex, cr.codex)),
+        opencode: normalizeResumeId(preferRunValue(sr.opencode, cr.opencode)),
+        gemini: normalizeResumeId(preferRunValue(sr.gemini, cr.gemini)),
+        copilot: normalizeResumeId(preferRunValue(sr.copilot, cr.copilot)),
+        droid: normalizeResumeId(preferRunValue(sr.droid, cr.droid)),
+        cursor: normalizeResumeId(preferRunValue(sr.cursor, cr.cursor)),
+        qwen: normalizeResumeId(preferRunValue(sr.qwen, cr.qwen)),
       }
       if (JSON.stringify(currentResume) !== JSON.stringify(nextResume)) {
         current.delegateResumeIds = nextResume
@@ -649,11 +699,14 @@ export async function finalizeChatTurn(params: {
       toolEventCount: persistedToolEvents.length,
       messageCount: messages.length,
     })) {
-      try {
-        const { createSkillSuggestionFromSession } = await import('@/lib/server/skills/skill-suggestions')
-        await createSkillSuggestionFromSession(sessionId)
-      } catch {
-        // Reviewed skill drafting is best-effort.
+      const rateLimited = await isAutoDraftRateLimited(current.agentId)
+      if (!rateLimited) {
+        try {
+          const { createSkillSuggestionFromSession } = await import('@/lib/server/skills/skill-suggestions')
+          await createSkillSuggestionFromSession(sessionId)
+        } catch {
+          // Reviewed skill drafting is best-effort.
+        }
       }
     }
     notify(`messages:${sessionId}`)

@@ -9,18 +9,21 @@ export async function GET(req: NextRequest) {
 
   // Resolve ~ to home dir
   const resolved = targetDir.startsWith('~')
-    ? path.join(os.homedir(), targetDir.slice(1))
-    : path.resolve(targetDir)
+    ? path.join(/*turbopackIgnore: true*/ os.homedir(), targetDir.slice(1))
+    : path.resolve(/*turbopackIgnore: true*/ targetDir)
 
   let dirs: Array<{ name: string; path: string }> = []
   try {
-    dirs = fs.readdirSync(resolved)
+    dirs = fs.readdirSync(/*turbopackIgnore: true*/ resolved)
       .filter(d => {
         if (d.startsWith('.')) return false
-        try { return fs.statSync(path.join(resolved, d)).isDirectory() } catch { return false }
+        try {
+          const childPath = path.join(/*turbopackIgnore: true*/ resolved, d)
+          return fs.statSync(/*turbopackIgnore: true*/ childPath).isDirectory()
+        } catch { return false }
       })
       .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
-      .map(d => ({ name: d, path: path.join(resolved, d) }))
+      .map(d => ({ name: d, path: path.join(/*turbopackIgnore: true*/ resolved, d) }))
   } catch {}
 
   const parentPath = resolved === '/' ? null : path.dirname(resolved)

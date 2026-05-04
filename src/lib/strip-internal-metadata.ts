@@ -9,27 +9,156 @@
  *
  * Importable from both client and server code.
  */
+import { z } from 'zod'
 
 // ---------------------------------------------------------------------------
 // Classification JSON
 // ---------------------------------------------------------------------------
 
 const INTERNAL_JSON_KEYS = [
-  'isDeliverableTask', 'quality_score', 'isBroadGoal',
-  'hasHumanSignals', 'explicitToolRequests', 'isResearchSynthesis', 'confidence',
+  'factsUpsert', 'artifactsUpsert', 'planSteps', 'decisionsAppend',
+  'blockersUpsert', 'questionsUpsert', 'hypothesesUpsert', 'supersedeIds',
+  'taskIntent', 'isLightweightDirectChat', 'isDeliverableTask', 'quality_score',
+  'isBroadGoal', 'hasHumanSignals', 'explicitToolRequests', 'isResearchSynthesis',
+  'confidence', 'isIncomplete',
 ]
 
 export const INTERNAL_KEY_RE = new RegExp(`"(?:${INTERNAL_JSON_KEYS.join('|')})"`)
 
+const WorkingStatePatchLikeSchema = z.object({
+  factsUpsert: z.array(z.unknown()).optional(),
+  artifactsUpsert: z.array(z.unknown()).optional(),
+  planSteps: z.array(z.unknown()).optional(),
+  decisionsAppend: z.array(z.unknown()).optional(),
+  blockersUpsert: z.array(z.unknown()).optional(),
+  questionsUpsert: z.array(z.unknown()).optional(),
+  hypothesesUpsert: z.array(z.unknown()).optional(),
+  supersedeIds: z.array(z.unknown()).optional(),
+}).passthrough()
+
+const MessageClassificationLikeSchema = z.object({
+  taskIntent: z.string().optional(),
+  isLightweightDirectChat: z.boolean().optional(),
+  isDeliverableTask: z.boolean().optional(),
+  isBroadGoal: z.boolean().optional(),
+  hasHumanSignals: z.boolean().optional(),
+  explicitToolRequests: z.array(z.unknown()).optional(),
+  isResearchSynthesis: z.boolean().optional(),
+  confidence: z.number().optional(),
+}).passthrough()
+
+const ResponseCompletenessLikeSchema = z.object({
+  isIncomplete: z.boolean(),
+}).passthrough()
+
+const QualityScoreLikeSchema = z.object({
+  quality_score: z.number(),
+  quality_reasoning: z.string().optional(),
+}).passthrough()
+
+interface InternalPayloadRule {
+  schema: z.ZodType<unknown>
+  distinctiveKeys: string[]
+}
+
+const INTERNAL_PAYLOAD_RULES: InternalPayloadRule[] = [
+  {
+    schema: WorkingStatePatchLikeSchema,
+    distinctiveKeys: [
+      'factsUpsert',
+      'artifactsUpsert',
+      'planSteps',
+      'decisionsAppend',
+      'blockersUpsert',
+      'questionsUpsert',
+      'hypothesesUpsert',
+      'supersedeIds',
+    ],
+  },
+  {
+    schema: MessageClassificationLikeSchema,
+    distinctiveKeys: [
+      'isLightweightDirectChat',
+      'isDeliverableTask',
+      'isBroadGoal',
+      'hasHumanSignals',
+      'explicitToolRequests',
+      'isResearchSynthesis',
+    ],
+  },
+  {
+    schema: ResponseCompletenessLikeSchema,
+    distinctiveKeys: ['isIncomplete'],
+  },
+  {
+    schema: QualityScoreLikeSchema,
+    distinctiveKeys: ['quality_score'],
+  },
+]
+
+function objectIsInternalMetadata(obj: Record<string, unknown>): boolean {
+  for (const { schema, distinctiveKeys } of INTERNAL_PAYLOAD_RULES) {
+    if (!distinctiveKeys.some((key) => key in obj)) continue
+    if (schema.safeParse(obj).success) return true
+  }
+  return false
+}
+
+function findBalancedJsonObjectEnd(text: string, start: number): number {
+  if (text.charAt(start) !== '{') return -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i += 1) {
+    const c = text.charAt(i)
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === '\\') escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') {
+      inString = true
+      continue
+    }
+    if (c === '{') depth += 1
+    else if (c === '}') {
+      depth -= 1
+      if (depth === 0) return i + 1
+    }
+  }
+  return -1
+}
+
 /**
  * Remove top-level `{ ... }` blocks that contain known internal classification keys.
- * Handles multi-line JSON. Only strips blocks where at least one internal key is present.
+ * Handles nested and multi-line JSON. Only strips blocks where at least one
+ * distinctive internal key is present and the payload passes schema validation.
  */
 export function stripInternalJson(text: string): string {
-  return text.replace(
-    /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g,
-    (match) => INTERNAL_KEY_RE.test(match) ? '' : match,
-  )
+  let out = text || ''
+  for (let guard = 0; guard < 32; guard += 1) {
+    let removed = false
+    for (let i = 0; i < out.length; i += 1) {
+      if (out.charAt(i) !== '{') continue
+      const end = findBalancedJsonObjectEnd(out, i)
+      if (end <= i) continue
+      const candidate = out.slice(i, end)
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(candidate)
+      } catch {
+        continue
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue
+      if (!objectIsInternalMetadata(parsed as Record<string, unknown>)) continue
+      out = (out.slice(0, i).replace(/\s+$/, '') + ' ' + out.slice(end).replace(/^\s+/, '')).trim()
+      removed = true
+      break
+    }
+    if (!removed) break
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------

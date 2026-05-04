@@ -48,7 +48,7 @@ async function writeClawHubBundleToWorkspace(bundle: ClawHubSkillBundle): Promis
     .filter((entry): entry is { file: ClawHubSkillBundle['files'][number], path: string } => Boolean(entry.path))
 
   const workspaceSkillsDir = resolveWorkspaceSkillsDir()
-  const targetDir = path.join(workspaceSkillsDir, sanitizeSkillDirName(bundle.slug))
+  const targetDir = path.join(/*turbopackIgnore: true*/ workspaceSkillsDir, sanitizeSkillDirName(bundle.slug))
   const normalizedPaths = stripSharedTopLevelDir(normalizedEntries.map((entry) => entry.path))
 
   await fs.rm(targetDir, { recursive: true, force: true })
@@ -57,12 +57,12 @@ async function writeClawHubBundleToWorkspace(bundle: ClawHubSkillBundle): Promis
   for (let index = 0; index < normalizedEntries.length; index += 1) {
     const relativePath = normalizedPaths[index]
     if (!relativePath) continue
-    const destination = path.join(targetDir, relativePath)
+    const destination = path.join(/*turbopackIgnore: true*/ targetDir, relativePath)
     if (!destination.startsWith(targetDir + path.sep) && destination !== targetDir) {
       throw new Error(`Refusing to write bundle file outside the target directory: ${relativePath}`)
     }
-    await fs.mkdir(path.dirname(destination), { recursive: true })
-    await fs.writeFile(destination, normalizedEntries[index].file.content)
+    await fs.mkdir(/*turbopackIgnore: true*/ path.dirname(destination), { recursive: true })
+    await fs.writeFile(/*turbopackIgnore: true*/ destination, normalizedEntries[index].file.content)
   }
 
   clearDiscoveredSkillsCache()

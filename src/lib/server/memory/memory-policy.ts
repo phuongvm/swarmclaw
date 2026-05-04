@@ -1,10 +1,23 @@
 import type { MemoryEntry } from '@/types'
 
+// Shape subset — we only need the boolean signals the LLM classifier emits.
+// Typed loosely here to avoid a circular import with chat-execution.
+type ClassificationHint = {
+  isCurrentThreadRecall?: boolean
+  isGreeting?: boolean
+  isAcknowledgement?: boolean
+  isMemoryWriteIntent?: boolean
+} | null | undefined
+
+// The regexes below are kept as fallbacks: when the LLM classifier returns
+// null (timeout, no provider), these cover the common English phrasings so
+// the system degrades gracefully. Paraphrases, non-English, or novel wordings
+// are handled by the classifier path in callers.
 const ACK_RE = /^(?:ok(?:ay)?|cool|nice|got it|makes sense|thanks|thank you|thx|roger|copy|sounds good|sgtm|yep|yup|y|nope?|nah|kk|done)[.! ]*$/i
 const GREETING_RE = /^(?:hi|hello|hey|yo|morning|good morning|good afternoon|good evening)[.! ]*$/i
 const MEMORY_META_RE = /\b(?:remember|memory|memorize|store this|save this|forget)\b/i
 const LOW_SIGNAL_RESPONSE_RE = /^(?:HEARTBEAT_OK|NO_MESSAGE)\b/i
-const CURRENT_THREAD_RECALL_MARKER_RE = /\b(?:this conversation|this chat|this thread|current conversation|current chat|current thread|same thread|same chat|same conversation|earlier in (?:this )?(?:conversation|chat|thread)|from (?:this|our) (?:conversation|chat|thread)|you just stored|you just said|we just discussed|we just decided)\b/i
+const CURRENT_THREAD_RECALL_MARKER_RE = /\b(?:this conversation|this chat|this thread|current conversation|current chat|current thread|same thread|same chat|same conversation|earlier in (?:this )?(?:conversation|chat|thread)|from (?:this|our) (?:conversation|chat|thread)|you just stored|you just said|you just gave|you just told|you just answered|you just replied|i just (?:said|asked|gave|told|mentioned)|we just (?:discussed|decided|talked)|your last (?:reply|answer|response|message)|my last (?:question|message)|above in (?:this |the )?(?:chat|thread|conversation)|(?:both|two|all) (?:answers|numbers|results|replies|responses))\b/i
 const CURRENT_THREAD_RECALL_INTENT_RE = /\b(?:what|which|who|when|where|did|remind|recap|summarize|repeat|list|tell me|answer|confirm|recall|mention)\b/i
 const DIRECT_MEMORY_WRITE_MARKER_RE = /\b(?:remember|memorize|store (?:this|that|the fact|it)|save (?:this|that|the fact|it) (?:to|in) memory|write to memory|add to memory|update.*memory|correct.*memory)\b/i
 const DIRECT_MEMORY_WRITE_FOLLOWUP_RE = /\b(?:confirm|recap|repeat|summarize|what you just stored|what you saved|what you updated)\b/i
@@ -17,17 +30,36 @@ function lower(value: string | null | undefined): string {
   return normalizeWhitespace(value || '').toLowerCase()
 }
 
-export function shouldInjectMemoryContext(message: string): boolean {
+export function shouldInjectMemoryContext(
+  message: string,
+  classification?: ClassificationHint,
+): boolean {
   const trimmed = normalizeWhitespace(message)
   if (!trimmed) return false
+  // Prefer the LLM classifier's judgment when available — it generalizes across
+  // paraphrases and non-English phrasings that the static regexes miss.
+  if (classification) {
+    if (classification.isGreeting === true) return false
+    if (classification.isAcknowledgement === true) return false
+    if (classification.isMemoryWriteIntent === true && trimmed.length < 24) return false
+    return true
+  }
+  // Regex fallback for when classifier is unavailable.
   if (trimmed.length < 16 && (ACK_RE.test(trimmed) || GREETING_RE.test(trimmed))) return false
   if (trimmed.length < 24 && MEMORY_META_RE.test(trimmed)) return false
   return true
 }
 
-export function isCurrentThreadRecallRequest(message: string): boolean {
+export function isCurrentThreadRecallRequest(
+  message: string,
+  classification?: ClassificationHint,
+): boolean {
   const trimmed = normalizeWhitespace(message)
   if (!trimmed) return false
+  if (classification?.isCurrentThreadRecall === true) return true
+  // Regex fallback. Skip when classifier confidently said "not thread recall"
+  // (isCurrentThreadRecall === false explicitly — not just missing).
+  if (classification && classification.isCurrentThreadRecall === false) return false
   if (!CURRENT_THREAD_RECALL_MARKER_RE.test(trimmed)) return false
   if (DIRECT_MEMORY_WRITE_MARKER_RE.test(trimmed) && DIRECT_MEMORY_WRITE_FOLLOWUP_RE.test(trimmed)) return false
   if (/\b(?:remember|store|save)\b/i.test(trimmed) && !/\?\s*$/.test(trimmed) && !/\b(?:what|which|who|when|where|did|confirm|recap|summarize|repeat|list|tell me|answer|recall)\b/i.test(trimmed)) {

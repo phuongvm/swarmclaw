@@ -6,9 +6,39 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url))
-const RUNTIME_STATE_GLOBS = [
-  'data/**/*',
-  '.tmp-swarmclaw-build/**/*',
+const OUTPUT_TRACE_EXCLUDE_GLOBS = [
+  './.env*',
+  './.git/**/*',
+  './.next/cache/**/*',
+  './.tmp-swarmclaw-build/**/*',
+  './AGENTS.md',
+  './CLAUDE.md',
+  './CONTRIBUTING.md',
+  './Dockerfile',
+  './Dockerfile.*',
+  './README.md',
+  './SWARMDOCK.md',
+  './artifacts/**/*',
+  './components.json',
+  './coverage/**/*',
+  './data/**/*',
+  './daemon.log',
+  './docker-compose.yml',
+  './electron-builder.yml',
+  './electron-dist/**/*',
+  './eslint.config.mjs',
+  './fly.toml',
+  './install.sh',
+  './next.config.ts',
+  './package-lock.json',
+  './postcss.config.mjs',
+  './railway.json',
+  './release/**/*',
+  './render.yaml',
+  './research.md',
+  './swarmclaw-skill.md',
+  './test-results/**/*',
+  './tsconfig.json',
 ]
 
 function getGitSha(): string {
@@ -50,11 +80,11 @@ function getAllowedDevOrigins(): string[] {
 const nextConfig: NextConfig = {
   output: 'standalone',
   outputFileTracingExcludes: {
-    '/*': RUNTIME_STATE_GLOBS,
-    '/api/**': RUNTIME_STATE_GLOBS,
-    instrumentation: RUNTIME_STATE_GLOBS,
-    '/instrumentation': RUNTIME_STATE_GLOBS,
-    'next-server': RUNTIME_STATE_GLOBS,
+    '/*': OUTPUT_TRACE_EXCLUDE_GLOBS,
+    '/api/**': OUTPUT_TRACE_EXCLUDE_GLOBS,
+    instrumentation: OUTPUT_TRACE_EXCLUDE_GLOBS,
+    '/instrumentation': OUTPUT_TRACE_EXCLUDE_GLOBS,
+    'next-server': OUTPUT_TRACE_EXCLUDE_GLOBS,
   },
   turbopack: {
     // Pin workspace root to the project directory so a stale lockfile

@@ -5,6 +5,7 @@ import { notify } from '@/lib/server/ws-hub'
 import { errorMessage } from '@/lib/shared-utils'
 import { handleMainLoopRunResult } from '@/lib/server/agents/main-agent-loop'
 import { buildRetrievalSummary } from '@/lib/server/runtime/run-ledger'
+import { getMissionIdForSession, recordTurnUsage } from '@/lib/server/missions/mission-service'
 
 import {
   clearDeferredDrain,
@@ -141,6 +142,21 @@ export async function drainExecution(
         error: next.run.error || null,
         durationMs: (next.run.endedAt || now()) - (next.run.startedAt || now()),
       })
+      const finishedMissionId = getMissionIdForSession(next.run.sessionId)
+      if (finishedMissionId && next.run.status === 'completed') {
+        try {
+          recordTurnUsage(finishedMissionId, {
+            turnsDelta: 1,
+            tokensDelta: typeof result.inputTokens === 'number' || typeof result.outputTokens === 'number'
+              ? (result.inputTokens || 0) + (result.outputTokens || 0)
+              : 0,
+            usdDelta: typeof result.estimatedCost === 'number' ? result.estimatedCost : 0,
+            toolCallsDelta: Array.isArray(result.toolEvents) ? result.toolEvents.length : 0,
+          })
+        } catch (rollupErr) {
+          log.warn('session-run', `Mission usage rollup failed for ${finishedMissionId}`, rollupErr)
+        }
+      }
       const followup = handleMainLoopRunResult({
         runId: next.run.id,
         sessionId: next.run.sessionId,

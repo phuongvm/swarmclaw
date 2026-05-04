@@ -1,38 +1,12 @@
 import { NextResponse } from 'next/server'
-import { loadCredentials, decryptKey } from '@/lib/server/storage'
+import { loadCredentials, decryptKey, loadProviderConfigs } from '@/lib/server/storage'
+import { listCredentialIdsByProvider } from '@/lib/server/credentials/credential-service'
 import { getDeviceId, wsConnect, rpcOnConnectedGateway } from '@/lib/providers/openclaw'
-import { buildCliEnv, probeCliAuth, resolveCliBinary } from '@/lib/providers/cli-utils'
+import { isCliProviderId } from '@/lib/providers/cli-provider-metadata'
+import { checkCliProviderReady } from '@/lib/server/cli-provider-readiness'
 import { OPENAI_COMPATIBLE_DEFAULTS } from '@/lib/server/provider-health'
 import { resolveOllamaRuntimeConfig } from '@/lib/server/ollama-runtime'
 import { normalizeOllamaSetupEndpoint, normalizeOpenClawUrl, parseErrorMessage } from './helpers'
-
-type SetupProvider =
-  | 'claude-cli'
-  | 'codex-cli'
-  | 'opencode-cli'
-  | 'gemini-cli'
-  | 'copilot-cli'
-  | 'droid-cli'
-  | 'cursor-cli'
-  | 'qwen-code-cli'
-  | 'goose'
-  | 'openai'
-  | 'openrouter'
-  | 'anthropic'
-  | 'google'
-  | 'deepseek'
-  | 'groq'
-  | 'together'
-  | 'mistral'
-  | 'xai'
-  | 'fireworks'
-  | 'nebius'
-  | 'deepinfra'
-  | 'ollama'
-  | 'openclaw'
-  | 'hermes'
-
-type CliSetupProvider = 'claude-cli' | 'codex-cli' | 'opencode-cli' | 'gemini-cli' | 'copilot-cli' | 'droid-cli' | 'cursor-cli' | 'qwen-code-cli' | 'goose'
 
 interface SetupCheckBody {
   provider?: string
@@ -109,7 +83,7 @@ async function checkOpenAiCompatible(
     },
     body: JSON.stringify({
       model: testModel,
-      max_tokens: 8,
+      max_completion_tokens: 8,
       messages: [{ role: 'user', content: 'Reply OK' }],
     }),
     signal: AbortSignal.timeout(90_000), // Increased from 15s to 60s for Hermes Agent approvals
@@ -126,9 +100,10 @@ async function checkOpenAiCompatible(
   }
 }
 
-async function checkAnthropic(apiKey: string, modelRaw: string): Promise<{ ok: boolean; message: string }> {
+async function checkAnthropic(apiKey: string, endpointRaw: string, modelRaw: string): Promise<{ ok: boolean; message: string }> {
   const model = modelRaw || 'claude-sonnet-4-6'
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const baseUrl = (endpointRaw || 'https://api.anthropic.com').replace(/\/+$/, '')
+  const res = await fetch(`${baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
       'x-api-key': apiKey,
@@ -221,7 +196,7 @@ async function checkOllama(params: {
   // Test the chat endpoint
   const label = runtime.useCloud ? 'Ollama Cloud' : 'Ollama'
   const chatEndpoint = `${normalizedEndpoint}/v1/chat/completions`
-  const chatBody = JSON.stringify({ model: testModel, max_tokens: 8, messages: [{ role: 'user', content: 'Reply OK' }] })
+  const chatBody = JSON.stringify({ model: testModel, max_completion_tokens: 8, messages: [{ role: 'user', content: 'Reply OK' }] })
 
   const chatRes = await fetch(chatEndpoint, {
     method: 'POST',
@@ -278,43 +253,13 @@ async function checkOpenClaw(apiKey: string, endpointRaw: string): Promise<{ ok:
   return { ok: true, message: 'Connected to OpenClaw gateway.', normalizedEndpoint, deviceId, recommendedModel }
 }
 
-function checkCliProvider(provider: CliSetupProvider): { ok: boolean; message: string } {
-  const env = buildCliEnv()
-  const config = {
-    'claude-cli': { binary: 'claude', backend: 'claude' as const, label: 'Claude Code CLI' },
-    'codex-cli': { binary: 'codex', backend: 'codex' as const, label: 'OpenAI Codex CLI' },
-    'opencode-cli': { binary: 'opencode', backend: 'opencode' as const, label: 'OpenCode CLI' },
-    'gemini-cli': { binary: 'gemini', backend: 'gemini' as const, label: 'Gemini CLI' },
-    'copilot-cli': { binary: 'copilot', backend: 'copilot' as const, label: 'GitHub Copilot CLI' },
-    'droid-cli': { binary: 'droid', backend: 'droid' as const, label: 'Factory Droid CLI' },
-    'cursor-cli': { binary: 'cursor-agent', backend: 'cursor' as const, label: 'Cursor Agent CLI' },
-    'qwen-code-cli': { binary: 'qwen', backend: 'qwen' as const, label: 'Qwen Code CLI' },
-    goose: { binary: 'goose', backend: 'goose' as const, label: 'Goose CLI' },
-  }[provider]
-
-  if (!config) return { ok: false, message: 'Unknown CLI provider.' }
-  const binary = resolveCliBinary(config.binary)
-  if (!binary) {
-    return {
-      ok: false,
-      message: `${config.label} is not installed. Install \`${config.binary}\` and ensure it is on your PATH.`,
-    }
-  }
-  const auth = probeCliAuth(binary, config.backend, env, process.cwd())
-  if (!auth.authenticated) {
-    return { ok: false, message: auth.errorMessage || `${config.label} is not configured.` }
-  }
-  return { ok: true, message: `${config.label} is installed and ready.` }
-}
-
 export async function POST(req: Request) {
   const body = parseBody(await req.json().catch(() => ({})))
-  const provider = clean(body.provider) as SetupProvider
+  const provider = clean(body.provider)
   let apiKey = clean(body.apiKey)
   const credentialId = clean(body.credentialId)
-  const endpoint = clean(body.endpoint)
+  let endpoint = clean(body.endpoint)
   const model = clean(body.model)
-  const CLI_PROVIDERS = new Set<CliSetupProvider>(['claude-cli', 'codex-cli', 'opencode-cli', 'gemini-cli', 'copilot-cli', 'droid-cli', 'cursor-cli', 'qwen-code-cli', 'goose'])
 
   // Resolve credentialId to an API key if no raw key was provided
   if (!apiKey && credentialId) {
@@ -329,8 +274,32 @@ export async function POST(req: Request) {
     }
   }
 
-  if (CLI_PROVIDERS.has(provider as CliSetupProvider)) {
-    const result = checkCliProvider(provider as CliSetupProvider)
+  // Auto-resolve credential by provider when no explicit credentialId
+  if (!apiKey && !credentialId && provider) {
+    try {
+      const credIds = listCredentialIdsByProvider(provider)
+      if (credIds.length > 0) {
+        const creds = loadCredentials()
+        for (const cid of credIds) {
+          if (creds[cid]?.encryptedKey) {
+            try { apiKey = decryptKey(creds[cid].encryptedKey); break } catch { /* skip */ }
+          }
+        }
+      }
+    } catch { /* best effort */ }
+  }
+
+  // Auto-resolve endpoint from provider config when not explicitly provided
+  if (!endpoint && provider) {
+    try {
+      const pConfigs = loadProviderConfigs()
+      const pConfig = pConfigs[provider]
+      if (pConfig?.baseUrl) endpoint = pConfig.baseUrl
+    } catch { /* best effort */ }
+  }
+
+  if (isCliProviderId(provider)) {
+    const result = checkCliProviderReady(provider)
     return NextResponse.json(result)
   }
 
@@ -354,7 +323,7 @@ export async function POST(req: Request) {
       }
       case 'anthropic': {
         if (!apiKey) return NextResponse.json({ ok: false, message: 'Anthropic API key is required.' })
-        const result = await checkAnthropic(apiKey, model)
+        const result = await checkAnthropic(apiKey, endpoint, model)
         return NextResponse.json(result)
       }
       case 'google':

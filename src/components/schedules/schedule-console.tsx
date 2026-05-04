@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState, type ButtonHTMLAttributes } from 'react'
+import { useRouter } from 'next/navigation'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { PageLoader } from '@/components/ui/page-loader'
 import { SearchInput } from '@/components/ui/search-input'
@@ -9,10 +10,11 @@ import { SectionHeader } from '@/components/ui/section-header'
 import { useNow } from '@/hooks/use-now'
 import { useWs } from '@/hooks/use-ws'
 import { useAppStore } from '@/stores/use-app-store'
+import { api } from '@/lib/app/api-client'
 import { archiveSchedule, purgeSchedule, restoreSchedule, runSchedule, updateSchedule } from '@/lib/schedules/schedules'
 import { cronToHuman } from '@/lib/schedules/cron-human'
 import { timeAgo, timeUntil } from '@/lib/time-format'
-import type { BoardTask, Schedule, ScheduleStatus } from '@/types'
+import type { BoardTask, ProtocolRun, Schedule, ScheduleStatus } from '@/types'
 import { toast } from 'sonner'
 
 type ScheduleScope = 'live' | 'archived' | 'runs'
@@ -21,6 +23,18 @@ type ScheduleRunStatusFilter = 'all' | Extract<BoardTask['status'], 'queued' | '
 type ScheduleCadenceFilter = 'all' | Schedule['scheduleType']
 type ScheduleDeliveryFilter = 'all' | 'ok' | 'error' | 'unknown'
 type ScheduleSortBy = 'nextRunAt' | 'lastRunAt' | 'updatedAt' | 'name'
+type ScheduleConsoleRunRow = {
+  id: string
+  kind: 'task' | 'protocol'
+  status: Extract<BoardTask['status'], 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'>
+  title: string
+  preview: string
+  updatedAt: number
+  createdAt: number
+  agentId: string
+  scheduleId: string | null
+  scheduleName: string
+}
 
 const STATUS_STYLES: Record<string, string> = {
   active: 'bg-emerald-500/12 text-emerald-400 border-emerald-500/20',
@@ -76,6 +90,55 @@ function runPreview(task: BoardTask): string {
   return (result || error || task.description || '').slice(0, 180) || 'No run summary yet.'
 }
 
+function mapProtocolStatus(status: ProtocolRun['status']): ScheduleConsoleRunRow['status'] {
+  switch (status) {
+    case 'draft':
+      return 'queued'
+    case 'running':
+    case 'waiting':
+    case 'paused':
+      return 'running'
+    case 'completed':
+      return 'completed'
+    case 'failed':
+      return 'failed'
+    case 'cancelled':
+    case 'archived':
+      return 'cancelled'
+    default:
+      return 'queued'
+  }
+}
+
+function mapTaskStatus(status: BoardTask['status']): ScheduleConsoleRunRow['status'] {
+  switch (status) {
+    case 'running':
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+    case 'queued':
+      return status
+    case 'archived':
+      return 'cancelled'
+    default:
+      return 'queued'
+  }
+}
+
+function protocolRunPreview(run: ProtocolRun): string {
+  const summary = typeof run.summary === 'string' ? run.summary.trim() : ''
+  if (summary) return summary.slice(0, 180)
+  const latestArtifact = Array.isArray(run.artifacts)
+    ? [...run.artifacts].sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))[0]
+    : null
+  const artifactContent = typeof latestArtifact?.content === 'string' ? latestArtifact.content.trim() : ''
+  if (artifactContent) return artifactContent.slice(0, 180)
+  const error = typeof run.lastError === 'string' ? run.lastError.trim() : ''
+  if (error) return error.slice(0, 180)
+  const goal = typeof run.config?.goal === 'string' ? run.config.goal.trim() : ''
+  return (goal || run.title || 'Structured session run').slice(0, 180)
+}
+
 function ActionButton(
   props: ButtonHTMLAttributes<HTMLButtonElement> & { tone?: 'default' | 'danger' },
 ) {
@@ -96,6 +159,7 @@ function ActionButton(
 }
 
 export function ScheduleConsole() {
+  const router = useRouter()
   const now = useNow()
   const schedules = useAppStore((s) => s.schedules)
   const tasks = useAppStore((s) => s.tasks)
@@ -119,12 +183,23 @@ export function ScheduleConsole() {
   const [sortBy, setSortBy] = useState<ScheduleSortBy>('nextRunAt')
   const [busyId, setBusyId] = useState('')
   const [loaded, setLoaded] = useState(false)
+  const [protocolRuns, setProtocolRuns] = useState<ProtocolRun[]>([])
+
+  const fetchProtocolRuns = async () => {
+    try {
+      const runs = await api<ProtocolRun[]>('GET', '/protocols/runs?includeSystemOwned=true&sourceKind=schedule&limit=200')
+      setProtocolRuns(Array.isArray(runs) ? runs : [])
+    } catch {
+      setProtocolRuns([])
+    }
+  }
 
   useEffect(() => {
-    void Promise.all([loadSchedules(), loadTasks(), loadAgents()]).then(() => setLoaded(true))
+    void Promise.all([loadSchedules(), loadTasks(), loadAgents(), fetchProtocolRuns()]).then(() => setLoaded(true))
   }, [loadAgents, loadSchedules, loadTasks])
   useWs('schedules', loadSchedules, 5_000)
   useWs('tasks', loadTasks, 5_000)
+  useWs('protocol_runs', fetchProtocolRuns, 5_000)
 
   useEffect(() => {
     if (scope === 'runs') {
@@ -142,6 +217,10 @@ export function ScheduleConsole() {
 
   const scheduleRows = useMemo(() => Object.values(schedules), [schedules])
   const runRows = useMemo(() => Object.values(tasks).filter((task) => task.sourceType === 'schedule'), [tasks])
+  const protocolRunRows = useMemo(
+    () => protocolRuns.filter((run) => run.sourceRef.kind === 'schedule' && run.status !== 'archived'),
+    [protocolRuns],
+  )
   const projectScopedSchedules = useMemo(
     () => scheduleRows.filter((schedule) => !activeProjectFilter || schedule.projectId === activeProjectFilter),
     [activeProjectFilter, scheduleRows],
@@ -149,6 +228,14 @@ export function ScheduleConsole() {
   const projectScopedRuns = useMemo(
     () => runRows.filter((task) => !activeProjectFilter || task.projectId === activeProjectFilter),
     [activeProjectFilter, runRows],
+  )
+  const projectScopedProtocolRuns = useMemo(
+    () => protocolRunRows.filter((run) => {
+      if (!activeProjectFilter) return true
+      const sourceSchedule = typeof run.scheduleId === 'string' ? schedules[run.scheduleId] : null
+      return !!sourceSchedule && sourceSchedule.projectId === activeProjectFilter
+    }),
+    [activeProjectFilter, protocolRunRows, schedules],
   )
 
   const summary = useMemo(() => {
@@ -200,31 +287,55 @@ export function ScheduleConsole() {
       })
   }, [agentFilter, agents, cadenceFilter, deliveryFilter, projectScopedSchedules, scope, search, sortBy, statusFilter])
 
-  const filteredRuns = useMemo(() => {
+  const filteredRuns = useMemo<ScheduleConsoleRunRow[]>(() => {
     const q = search.trim().toLowerCase()
-    return projectScopedRuns
-      .filter((task) => {
-        if (runStatusFilter !== 'all' && task.status !== runStatusFilter) return false
-        if (agentFilter !== 'all' && task.agentId !== agentFilter) return false
+    const normalizedTaskRuns: ScheduleConsoleRunRow[] = projectScopedRuns.map((task) => ({
+      id: task.id,
+      kind: 'task',
+      status: mapTaskStatus(task.status),
+      title: task.title,
+      preview: runPreview(task),
+      updatedAt: task.updatedAt || task.createdAt,
+      createdAt: task.createdAt,
+      agentId: task.agentId,
+      scheduleId: typeof task.sourceScheduleId === 'string' ? task.sourceScheduleId : null,
+      scheduleName: typeof task.sourceScheduleName === 'string' ? task.sourceScheduleName : 'Scheduled run',
+    }))
+    const normalizedProtocolRuns: ScheduleConsoleRunRow[] = projectScopedProtocolRuns.map((run) => {
+      const sourceSchedule = typeof run.scheduleId === 'string' ? schedules[run.scheduleId] : null
+      return {
+        id: run.id,
+        kind: 'protocol',
+        status: mapProtocolStatus(run.status),
+        title: run.title,
+        preview: protocolRunPreview(run),
+        updatedAt: run.updatedAt || run.createdAt,
+        createdAt: run.createdAt,
+        agentId: run.facilitatorAgentId || run.participantAgentIds[0] || '',
+        scheduleId: typeof run.scheduleId === 'string' ? run.scheduleId : null,
+        scheduleName: sourceSchedule?.name || run.title || 'Structured session',
+      }
+    })
+    return [...normalizedTaskRuns, ...normalizedProtocolRuns]
+      .filter((entry) => {
+        if (runStatusFilter !== 'all' && entry.status !== runStatusFilter) return false
+        if (agentFilter !== 'all' && entry.agentId !== agentFilter) return false
         if (cadenceFilter !== 'all') {
-          const sourceSchedule = typeof task.sourceScheduleId === 'string' ? schedules[task.sourceScheduleId] : null
+          const sourceSchedule = entry.scheduleId ? schedules[entry.scheduleId] : null
           if (!sourceSchedule || sourceSchedule.scheduleType !== cadenceFilter) return false
         }
         if (!q) return true
-        const agentName = agents[task.agentId]?.name || ''
-        const sourceSchedule = typeof task.sourceScheduleName === 'string' ? task.sourceScheduleName : ''
+        const agentName = agents[entry.agentId]?.name || ''
         const haystack = [
-          task.title,
-          task.description,
-          sourceSchedule,
-          task.result,
-          task.error,
+          entry.title,
+          entry.preview,
+          entry.scheduleName,
           agentName,
         ].filter(Boolean).join(' ').toLowerCase()
         return haystack.includes(q)
       })
-      .sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt))
-  }, [agentFilter, agents, cadenceFilter, projectScopedRuns, runStatusFilter, schedules, search])
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+  }, [agentFilter, agents, cadenceFilter, projectScopedProtocolRuns, projectScopedRuns, runStatusFilter, schedules, search])
 
   const handleArchive = async (scheduleId: string) => {
     setBusyId(scheduleId)
@@ -275,7 +386,7 @@ export function ScheduleConsole() {
       const result = await runSchedule(scheduleId)
       if ('queued' in result && result.queued === false) toast.message('Schedule already has an in-flight run')
       else toast.success('Schedule run queued')
-      await Promise.all([loadSchedules(), loadTasks()])
+      await Promise.all([loadSchedules(), loadTasks(), fetchProtocolRuns()])
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to run schedule')
     } finally {
@@ -305,6 +416,10 @@ export function ScheduleConsole() {
   const openTask = (taskId: string) => {
     setEditingTaskId(taskId)
     setTaskSheetOpen(true)
+  }
+
+  const openProtocolRun = (runId: string) => {
+    router.push(`/protocols?runId=${encodeURIComponent(runId)}`)
   }
 
   const resetFilters = () => {
@@ -469,21 +584,22 @@ export function ScheduleConsole() {
             <div className="divide-y divide-white/[0.05]">
               {filteredRuns.length === 0 ? (
                 <div className="px-5 py-10 text-center text-text-3/60">No schedule runs match the current filters.</div>
-              ) : filteredRuns.map((task) => {
-                const agent = agents[task.agentId]
-                const sourceSchedule = typeof task.sourceScheduleId === 'string' ? schedules[task.sourceScheduleId] : null
+              ) : filteredRuns.map((run) => {
+                const agent = run.agentId ? agents[run.agentId] : null
+                const sourceSchedule = run.scheduleId ? schedules[run.scheduleId] : null
                 return (
-                  <div key={task.id} className="px-5 py-4 hover:bg-white/[0.02] transition-colors">
+                  <div key={`${run.kind}:${run.id}`} className="px-5 py-4 hover:bg-white/[0.02] transition-colors">
                     <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2 mb-1.5">
-                          <span className={`px-2 py-0.5 rounded-[8px] border text-[10px] font-700 uppercase tracking-[0.08em] ${badgeClass(task.status)}`}>{task.status}</span>
-                          {sourceSchedule && (
-                            <span className="text-[11px] text-text-3/60 uppercase tracking-[0.08em]">{sourceSchedule.name}</span>
-                          )}
+                          <span className={`px-2 py-0.5 rounded-[8px] border text-[10px] font-700 uppercase tracking-[0.08em] ${badgeClass(run.status)}`}>{run.status}</span>
+                          <span className="text-[11px] text-text-3/60 uppercase tracking-[0.08em]">{run.scheduleName}</span>
+                          <span className="text-[11px] text-text-3/40 uppercase tracking-[0.08em]">
+                            {run.kind === 'protocol' ? 'Structured session' : 'Legacy task'}
+                          </span>
                         </div>
-                        <div className="text-[15px] font-600 text-text-2">{task.title}</div>
-                        <div className="text-[13px] text-text-3 mt-1 line-clamp-2">{runPreview(task)}</div>
+                        <div className="text-[15px] font-600 text-text-2">{run.title}</div>
+                        <div className="text-[13px] text-text-3 mt-1 line-clamp-2">{run.preview}</div>
                         <div className="flex flex-wrap items-center gap-2 mt-3">
                           {agent && (
                             <div className="inline-flex items-center gap-2 rounded-[10px] bg-white/[0.03] px-2.5 py-1.5 text-[12px] text-text-2">
@@ -496,11 +612,13 @@ export function ScheduleConsole() {
                               <span>{agent.name}</span>
                             </div>
                           )}
-                          <span className="text-[12px] text-text-3/60">Updated {timeAgo(task.updatedAt, now)}</span>
+                          <span className="text-[12px] text-text-3/60">Updated {timeAgo(run.updatedAt, now)}</span>
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
-                        <ActionButton onClick={() => openTask(task.id)}>Open Task</ActionButton>
+                        <ActionButton onClick={() => run.kind === 'protocol' ? openProtocolRun(run.id) : openTask(run.id)}>
+                          {run.kind === 'protocol' ? 'Open Run' : 'Open Task'}
+                        </ActionButton>
                         {sourceSchedule && sourceSchedule.status !== 'archived' && (
                           <ActionButton onClick={() => openSchedule(sourceSchedule.id)}>Open Schedule</ActionButton>
                         )}

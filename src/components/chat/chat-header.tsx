@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useMemo, useRef, type ReactNode } from 'react'
+import { Plus } from 'lucide-react'
 import type { Session } from '@/types'
 import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
@@ -17,6 +18,8 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { useNavigate } from '@/lib/app/navigation'
 import { getEnabledToolIds } from '@/lib/capability-selection'
+import { getNewSessionButtonTitle, hasResettableSessionRuntime } from '@/lib/chat/new-session'
+import { ContextMeterBadge } from './context-meter-badge'
 
 function Tip({ label, children, side = 'bottom' }: { label: string; children: ReactNode; side?: 'top' | 'bottom' | 'left' | 'right' }) {
   return (
@@ -80,9 +83,13 @@ interface Props {
   connectorFilter?: string | null
   onConnectorFilterChange?: (filter: string | null) => void
   hasMultipleSources?: boolean
+  messageCount?: number
+  onCompactComplete?: () => void
+  onClearRequest?: () => void
+  onStartNewSession?: () => void
 }
 
-export function ChatHeader({ session, streaming, onStop, onMenuToggle, onBack, mobile, browserActive, onStopBrowser, onVoiceToggle, voiceActive, voiceSupported, connectorSources, connectorFilter, onConnectorFilterChange, hasMultipleSources }: Props) {
+export function ChatHeader({ session, streaming, onStop, onMenuToggle, onBack, mobile, browserActive, onStopBrowser, onVoiceToggle, voiceActive, voiceSupported, connectorSources, connectorFilter, onConnectorFilterChange, hasMultipleSources, messageCount = 0, onCompactComplete, onClearRequest, onStartNewSession }: Props) {
   const now = useNow()
   const agentStatus = useChatStore((s) => s.agentStatus)
   const agents = useAppStore((s) => s.agents)
@@ -110,6 +117,8 @@ export function ChatHeader({ session, streaming, onStop, onMenuToggle, onBack, m
   const renameInputRef = useRef<HTMLInputElement>(null)
   const renameContainerRef = useRef<HTMLSpanElement>(null)
   const liveStatus = agentStatus || null
+  const canStartNewSession = !streaming && !!onStartNewSession && (messageCount > 0 || hasResettableSessionRuntime(session))
+  const newSessionTitle = getNewSessionButtonTitle(session)
   const connectorPresenceMeta = useMemo(() => {
     if (!connector) return null
     const lastAt = connectorPresence?.lastMessageAt
@@ -418,6 +427,28 @@ export function ChatHeader({ session, streaming, onStop, onMenuToggle, onBack, m
                 <span className="w-1.5 h-1.5 rounded-full bg-accent-bright" style={{ animation: 'pulse 1.5s ease infinite' }} />
                 Responding
               </HeaderChip>
+            )}
+            {messageCount > 0 && onCompactComplete && onClearRequest && (
+              <ContextMeterBadge
+                sessionId={session.id}
+                messageCount={messageCount}
+                onCompactComplete={onCompactComplete}
+                onClearRequest={onClearRequest}
+              />
+            )}
+            {canStartNewSession && (
+              <Tip label={newSessionTitle}>
+                <button
+                  type="button"
+                  onClick={onStartNewSession}
+                  className="inline-flex items-center gap-1.5 rounded-[9px] border border-white/[0.06] bg-white/[0.03] px-2.5 py-1 text-[10px] font-600 text-text-3/70 transition-colors shrink-0 cursor-pointer hover:border-white/[0.15] hover:bg-white/[0.05] hover:text-text-2"
+                  aria-label="Start a new chat session"
+                  title={newSessionTitle}
+                >
+                  <Plus className="h-3 w-3" aria-hidden="true" strokeWidth={2.2} />
+                  <span>New chat</span>
+                </button>
+              </Tip>
             )}
           </div>
           {liveStatus?.status && (

@@ -35,7 +35,11 @@ export const MAX_BLOCKERS = 8
 export const MAX_OPEN_QUESTIONS = 8
 export const MAX_HYPOTHESES = 8
 export const MAX_EVIDENCE_REFS = 40
-export const EXTRACTION_TIMEOUT_MS = 7_500
+const DEFAULT_EXTRACTION_TIMEOUT_MS = 15_000
+export const EXTRACTION_TIMEOUT_MS: number = (() => {
+  const raw = Number(process.env.SC_WORKING_STATE_TIMEOUT_MS)
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : DEFAULT_EXTRACTION_TIMEOUT_MS
+})()
 
 export const ACTIVE_STATUS: WorkingStateItemStatus = 'active'
 

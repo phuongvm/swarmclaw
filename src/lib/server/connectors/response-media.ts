@@ -226,6 +226,7 @@ export function connectorSupportsBinaryMedia(platform: string): boolean {
     || platform === 'slack'
     || platform === 'discord'
     || platform === 'openclaw'
+    || platform === 'email'
 }
 
 export function formatMediaLine(media: InboundMedia): string {

@@ -700,6 +700,7 @@ export function reconcileFinishedRunningTasks(): { reconciled: number; deadLette
     if (!fallbackText && !task.result) {
       task.status = 'failed'
       task.result = 'Agent session finished without producing output.'
+      task.checkoutRunId = null
       task.updatedAt = now
       tasksDirty = true
       continue
@@ -964,6 +965,7 @@ function scheduleRetryOrDeadLetter(task: BoardTask, reason: string): 'retry' | '
   if (isCancelledTask(task)) {
     task.retryScheduledAt = null
     task.deadLetteredAt = null
+    task.checkoutRunId = null
     task.updatedAt = Date.now()
     return 'dead_lettered'
   }
@@ -975,6 +977,10 @@ function scheduleRetryOrDeadLetter(task: BoardTask, reason: string): 'retry' | '
     const delayMs = jitteredBackoff((task.retryBackoffSec || 30) * 1000, Math.max(0, (task.attempts || 1) - 1), 6 * 3600_000)
     task.status = 'queued'
     task.retryScheduledAt = now + delayMs
+    // Release the prior checkout so the task can be checked out again on retry.
+    // Without this, checkoutTask() returns null every attempt and the orphan-
+    // recovery loop burns CPU re-queueing a task that can never run.
+    task.checkoutRunId = null
     task.updatedAt = now
     task.error = `Retry scheduled after failure: ${reason}`.slice(0, 500)
     if (!task.comments) task.comments = []
@@ -990,6 +996,7 @@ function scheduleRetryOrDeadLetter(task: BoardTask, reason: string): 'retry' | '
   task.status = 'failed'
   task.deadLetteredAt = now
   task.retryScheduledAt = null
+  task.checkoutRunId = null
   task.updatedAt = now
   task.error = `Dead-lettered after ${task.attempts}/${task.maxAttempts} attempts: ${reason}`.slice(0, 500)
   if (!task.comments) task.comments = []
@@ -1099,13 +1106,23 @@ export async function processNext() {
       const currentQueue = loadQueue()
       const queueSet = new Set(currentQueue)
       let recovered = false
+      let tasksDirty = false
       for (const [id, t] of Object.entries(allTasks) as [string, BoardTask][]) {
         if (t.status === 'queued' && !queueSet.has(id)) {
           log.info(TAG, `[queue] Recovering orphaned queued task: "${t.title}" (${id})`)
+          // Defence in depth: a queued task must not carry a stale checkoutRunId
+          // (left over from pre-1.5.38 retries). If it does, checkoutTask() will
+          // reject every attempt and this orphan-recovery loop will spin at 100%
+          // CPU re-queueing a task that can never run.
+          if (t.checkoutRunId) {
+            t.checkoutRunId = null
+            tasksDirty = true
+          }
           pushQueueUnique(currentQueue, id)
           recovered = true
         }
       }
+      if (tasksDirty) saveTasks(allTasks)
       if (recovered) saveQueue(currentQueue)
     }
 
@@ -1146,6 +1163,7 @@ export async function processNext() {
       if (!agent) {
         task.status = 'failed'
         task.deadLetteredAt = Date.now()
+        task.checkoutRunId = null
         task.error = `Agent ${task.agentId} not found`
         task.updatedAt = Date.now()
         saveTasks(latestTasks)
@@ -1176,6 +1194,7 @@ export async function processNext() {
         } else {
           task.status = 'failed'
           task.deadLetteredAt = Date.now()
+          task.checkoutRunId = null
           task.error = `No agent matches required capabilities: [${reqCaps.join(', ')}]`
           task.updatedAt = Date.now()
           saveTasks(latestTasks)

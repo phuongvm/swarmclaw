@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { listRuns } from '@/lib/server/runtime/session-run-manager'
+import { listUnifiedRuns } from '@/lib/server/runs/unified-run-queries'
 import type { SessionRunStatus } from '@/types'
 
 export const dynamic = 'force-dynamic'
@@ -11,6 +11,5 @@ export async function GET(req: Request) {
   const limitRaw = searchParams.get('limit')
   const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined
 
-  const runs = listRuns({ sessionId, status, limit })
-  return NextResponse.json(runs)
+  return NextResponse.json(listUnifiedRuns({ sessionId, status, limit }))
 }

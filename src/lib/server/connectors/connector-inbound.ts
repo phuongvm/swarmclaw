@@ -1,5 +1,6 @@
 import { log } from '@/lib/server/logger'
 import { genId } from '@/lib/id'
+import { NON_LANGGRAPH_PROVIDER_IDS } from '@/lib/provider-sets'
 import {
   loadConnectors,
   loadSession,
@@ -1022,6 +1023,8 @@ async function routeMessage(connector: Connector, msg: InboundMessage): Promise<
     }
   }
 
+
+
   // Build system prompt: [identity] \n\n [userPrompt] \n\n [soul] \n\n [systemPrompt]
   const settings = loadSettings()
   const promptParts: string[] = []
@@ -1196,7 +1199,7 @@ If media sending fails, report the exact error and retry with a corrected path/t
     const transcript = typeof params.transcript === 'string' ? params.transcript.trim() : ''
     if (transcript) currentChannelDeliveryRef.current?.transcripts.push(transcript)
   }
-  const hasTools = getEnabledCapabilityIds(session).length > 0 && session.provider !== 'claude-cli'
+  const hasTools = getEnabledCapabilityIds(session).length > 0 && !NON_LANGGRAPH_PROVIDER_IDS.has(session.provider as string)
   log.info(TAG, `Routing message to agent "${agent.name}" (${session.provider}/${session.model}), hasTools=${!!hasTools}`)
 
   if (hasTools) {

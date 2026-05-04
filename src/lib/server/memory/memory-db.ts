@@ -388,7 +388,7 @@ export function buildFtsQuery(input: string): string {
   }
 
   if (unique.length === 1) {
-    return unique[0].length >= 5 ? `"${unique[0].replace(/"/g, '')}"` : ''
+    return `"${unique[0].replace(/"/g, '')}"`
   }
 
   const selected = unique.slice(0, Math.min(4, MAX_FTS_QUERY_TERMS))

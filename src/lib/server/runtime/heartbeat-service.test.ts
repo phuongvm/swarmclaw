@@ -450,3 +450,35 @@ describe('heartbeatConfigForSession lightContext', () => {
     assert.equal(cfg.lightContext, false)
   })
 })
+
+describe('classifyWakeOutcome (runaway-loop guard)', () => {
+  it('returns null for a run with visible text and no error', () => {
+    assert.equal(mod.classifyWakeOutcome({ text: 'all good', error: null }), null)
+    assert.equal(mod.classifyWakeOutcome({ text: 'ORCHESTRATOR_OK' }), null)
+  })
+
+  it('treats a resolved-but-errored result as failure (the 429 regression)', () => {
+    const out = mod.classifyWakeOutcome({
+      text: '',
+      error: '429 All credentials for model gpt-5.4 are cooling down via provider codex',
+    })
+    assert.equal(out, '429 All credentials for model gpt-5.4 are cooling down via provider codex')
+  })
+
+  it('counts empty visible output as failure so silent wakes trigger backoff', () => {
+    assert.equal(mod.classifyWakeOutcome({ text: '' }), 'empty wake response')
+    assert.equal(mod.classifyWakeOutcome({ text: '   \n\t' }), 'empty wake response')
+    assert.equal(mod.classifyWakeOutcome({}), 'empty wake response')
+    assert.equal(mod.classifyWakeOutcome(null), 'empty wake response')
+    assert.equal(mod.classifyWakeOutcome(undefined), 'empty wake response')
+  })
+
+  it('ignores a non-string error field and falls back to text check', () => {
+    assert.equal(mod.classifyWakeOutcome({ text: 'hi', error: 42 }), null)
+    assert.equal(mod.classifyWakeOutcome({ text: '', error: 42 }), 'empty wake response')
+  })
+
+  it('ignores an empty-string error so whitespace errors do not double-count', () => {
+    assert.equal(mod.classifyWakeOutcome({ text: 'fine', error: '   ' }), null)
+  })
+})

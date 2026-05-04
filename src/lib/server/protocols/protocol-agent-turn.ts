@@ -6,6 +6,8 @@ import { HumanMessage } from '@langchain/core/messages'
 import { z } from 'zod'
 import { log } from '@/lib/server/logger'
 import { genId } from '@/lib/id'
+import { getProvider } from '@/lib/providers'
+import { NON_LANGGRAPH_PROVIDER_IDS } from '@/lib/provider-sets'
 
 const TAG = 'protocol-agent-turn'
 import type {
@@ -49,6 +51,7 @@ import type { ProtocolAgentTurnResult, ProtocolRunDeps } from '@/lib/server/prot
 import { normalizeProtocolRun } from '@/lib/server/protocols/protocol-normalization'
 import { persistChatroomInteractionMemory } from '@/lib/server/chatrooms/chatroom-memory-bridge'
 import { selectKnowledgeCitations } from '@/lib/server/knowledge-sources'
+import { queryLogs } from '@/lib/server/execution-log'
 
 // ---- Zod schema ----
 
@@ -248,24 +251,26 @@ export async function defaultExecuteAgentTurn(params: {
       await new Promise((resolve) => setTimeout(resolve, delay))
     }
     try {
-      const result = await Promise.race([
-        streamAgentChat({
-          session: syntheticSession,
-          message: params.prompt,
-          apiKey,
-          systemPrompt: fullSystemPrompt,
-          write: () => {},
-          history: buildHistoryForAgent(chatroom, agent.id),
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Agent turn timed out after ${AGENT_TURN_TIMEOUT_MS / 1000}s (agent: ${params.agentId})`)), AGENT_TURN_TIMEOUT_MS),
-        ),
-      ])
-      const rawText = result.finalResponse || result.fullText || ''
-      const text = stripHiddenControlTokens(rawText)
+      const turnStartedAt = Date.now()
+      const history = buildHistoryForAgent(chatroom, agent.id)
+      const result = await executeStructuredSessionTurnWithTimeout({
+        session: syntheticSession,
+        message: params.prompt,
+        apiKey,
+        systemPrompt: fullSystemPrompt,
+        history,
+        agentId: params.agentId,
+      })
+      const rawText = result.text || ''
+      const text = resolveStructuredSessionTurnText({
+        rawText,
+        sessionId: syntheticSession.id,
+        turnStartedAt,
+        agentId: params.agentId,
+      })
       const grounding = selectKnowledgeCitations({
         responseText: text,
-        retrievalTrace: result.knowledgeRetrievalTrace || null,
+        retrievalTrace: result.retrievalTrace || null,
       })
       if (text.trim() && !shouldSuppressHiddenControlText(rawText)) {
         appendSyntheticSessionMessage(syntheticSession.id, 'assistant', text)
@@ -295,6 +300,104 @@ export async function defaultExecuteAgentTurn(params: {
     }
   }
   throw lastError
+}
+
+async function executeStructuredSessionTurn(params: {
+  session: ReturnType<typeof ensureSyntheticSession>
+  message: string
+  apiKey: string | null
+  systemPrompt: string
+  history: ReturnType<typeof buildHistoryForAgent>
+}): Promise<ProtocolAgentTurnResult> {
+  if (NON_LANGGRAPH_PROVIDER_IDS.has(params.session.provider)) {
+    const provider = getProvider(params.session.provider)
+    if (!provider) throw new Error(`Unknown provider: ${params.session.provider}`)
+    let streamedText = ''
+    const rawResponseText = await provider.handler.streamChat({
+      session: params.session,
+      message: params.message,
+      apiKey: params.apiKey,
+      systemPrompt: params.systemPrompt,
+      write: (raw: string) => {
+        for (const line of raw.split('\n')) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const parsed = JSON.parse(line.slice(6).trim()) as { t?: string; text?: string }
+            if ((parsed.t === 'd' || parsed.t === 'r') && typeof parsed.text === 'string') {
+              streamedText += parsed.text
+            }
+          } catch {
+            // Ignore malformed provider event payloads here and fall back to the final response text.
+          }
+        }
+      },
+      active: new Map<string, unknown>(),
+      loadHistory: () => params.history,
+    })
+    return {
+      text: rawResponseText || streamedText,
+      toolEvents: [],
+      retrievalTrace: null,
+      citations: [],
+    }
+  }
+
+  const streamed = await streamAgentChat({
+    session: params.session,
+    message: params.message,
+    apiKey: params.apiKey,
+    systemPrompt: params.systemPrompt,
+    write: () => {},
+    history: params.history,
+  })
+  return {
+    text: streamed.finalResponse || streamed.fullText || '',
+    toolEvents: streamed.toolEvents || [],
+    retrievalTrace: streamed.knowledgeRetrievalTrace || null,
+    citations: [],
+  }
+}
+
+async function executeStructuredSessionTurnWithTimeout(params: {
+  session: ReturnType<typeof ensureSyntheticSession>
+  message: string
+  apiKey: string | null
+  systemPrompt: string
+  history: ReturnType<typeof buildHistoryForAgent>
+  agentId: string
+}): Promise<ProtocolAgentTurnResult> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      executeStructuredSessionTurn(params),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error(`Agent turn timed out after ${AGENT_TURN_TIMEOUT_MS / 1000}s (agent: ${params.agentId})`)),
+          AGENT_TURN_TIMEOUT_MS,
+        )
+      }),
+    ])
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
+}
+
+export function resolveStructuredSessionTurnText(params: {
+  rawText: string
+  sessionId: string
+  turnStartedAt: number
+  agentId: string
+}): string {
+  const text = stripHiddenControlTokens(params.rawText)
+  if (text.trim()) return text
+  const recentError = queryLogs({
+    sessionId: params.sessionId,
+    category: 'error',
+    since: params.turnStartedAt,
+    limit: 1,
+  })[0]
+  if (recentError?.summary) throw new Error(recentError.summary)
+  throw new Error(`Structured session turn produced no visible output for agent ${params.agentId}.`)
 }
 
 export function extractFirstJsonObject(text: string): string | null {

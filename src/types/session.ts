@@ -69,6 +69,7 @@ export interface Session {
   claudeSessionId: string | null
   codexThreadId?: string | null
   opencodeSessionId?: string | null
+  opencodeWebSessionId?: string | null
   geminiSessionId?: string | null
   copilotSessionId?: string | null
   droidSessionId?: string | null
@@ -172,6 +173,10 @@ export interface Session {
   file?: string | null
   queuedCount?: number
   currentRunId?: string | null
+  /** Optional link to an autonomous Mission that drives this session. */
+  missionId?: string | null
+  /** Cost-attribution tags applied to all usage records produced by this session. */
+  billingCodes?: string[]
   conversationTone?: string
   emoji?: string
   creature?: string
@@ -226,4 +231,4 @@ export type SessionTool =
   | 'crawl'
 
 export type SessionType = 'human'
-export type AppView = 'home' | 'agents' | 'org_chart' | 'inbox' | 'chatrooms' | 'protocols' | 'schedules' | 'memory' | 'tasks' | 'secrets' | 'wallets' | 'providers' | 'skills' | 'connectors' | 'webhooks' | 'mcp_servers' | 'knowledge' | 'extensions' | 'usage' | 'runs' | 'autonomy' | 'logs' | 'settings' | 'projects' | 'activity' | 'swarmfeed' | 'marketplace'
+export type AppView = 'home' | 'agents' | 'org_chart' | 'inbox' | 'chatrooms' | 'protocols' | 'schedules' | 'memory' | 'tasks' | 'quality' | 'secrets' | 'wallets' | 'providers' | 'skills' | 'connectors' | 'webhooks' | 'mcp_servers' | 'knowledge' | 'extensions' | 'usage' | 'runs' | 'autonomy' | 'logs' | 'settings' | 'projects' | 'activity' | 'swarmfeed' | 'marketplace' | 'missions'

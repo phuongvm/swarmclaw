@@ -10,25 +10,29 @@ export async function register() {
     const { initWsServer, closeWsServer } = await import('./lib/server/ws-hub')
     const { ensureDaemonStarted } = await import('@/lib/server/runtime/daemon-state')
     await ensureOpenTelemetryStarted()
-    
-    // One-time migration: backfill allKnownPeerIds on existing connector sessions
-    try {
-      const { backfillAllKnownPeerIds, pruneThreadConnectorMirrors } = await import('@/lib/server/connectors/session-consolidation')
-      backfillAllKnownPeerIds()
-      pruneThreadConnectorMirrors()
-    } catch (err) {
-      log.error(TAG, 'connector session consolidation failed:', err)
-    }
 
-    // In worker-only mode, we FORCE the daemon to start, but skip the WebSocket listener
-    if (isWorkerOnly) {
-      log.info(TAG, 'Booting in WORKER ONLY mode')
-      ensureDaemonStarted('worker-boot')
-    } else {
-      // In normal mode, we start the WS server, and conditionally start the daemon if autostart allows
-      initWsServer()
-      ensureDaemonStarted('instrumentation')
-    }
+    // Defer migrations, WS init, and daemon startup so the HTTP listener can bind
+    // and /api/healthz can respond immediately. Heavy per-install work (session
+    // migrations on large data dirs, daemon recovery) no longer gates first boot.
+    setImmediate(() => {
+      void (async () => {
+        try {
+          const { backfillAllKnownPeerIds, pruneThreadConnectorMirrors } = await import('@/lib/server/connectors/session-consolidation')
+          backfillAllKnownPeerIds()
+          pruneThreadConnectorMirrors()
+        } catch (err) {
+          log.error(TAG, 'connector session consolidation failed:', err)
+        }
+
+        if (isWorkerOnly) {
+          log.info(TAG, 'Booting in WORKER ONLY mode')
+          ensureDaemonStarted('worker-boot')
+        } else {
+          initWsServer()
+          ensureDaemonStarted('instrumentation')
+        }
+      })()
+    })
 
     // Graceful shutdown: stop background services and close WS connections
     const shutdownState = hmrSingleton('__swarmclaw_shutdown_state__', () => ({

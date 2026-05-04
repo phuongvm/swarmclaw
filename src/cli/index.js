@@ -68,6 +68,13 @@ const COMMAND_GROUPS = [
     ],
   },
   {
+    name: 'artifacts',
+    description: 'Resolve evidence artifacts for runs, missions, and tasks',
+    commands: [
+      cmd('list', 'GET', '/artifacts', 'List evidence artifacts (use --query runId=, --query missionId=, or --query taskId=)'),
+    ],
+  },
+  {
     name: 'claude-skills',
     description: 'Read local Claude skills directory metadata',
     commands: [
@@ -199,6 +206,13 @@ const COMMAND_GROUPS = [
     ],
   },
   {
+    name: 'operations',
+    description: 'Operator triage and readiness summaries',
+    commands: [
+      cmd('pulse', 'GET', '/operations/pulse', 'Get Operations Pulse summary (use --query range=24h or --query range=7d)'),
+    ],
+  },
+  {
     name: 'documents',
     description: 'Manage documents',
     commands: [
@@ -215,9 +229,10 @@ const COMMAND_GROUPS = [
     description: 'Run agent evaluation scenarios',
     commands: [
       cmd('scenarios', 'GET', '/eval/scenarios', 'List available eval scenarios'),
+      cmd('suites', 'GET', '/eval/suites', 'List available eval suites (core, swe-bench-lite, gaia-l1, ...)'),
       cmd('status', 'GET', '/eval/run', 'Get eval run status'),
       cmd('run', 'POST', '/eval/run', 'Run an eval scenario against an agent', { expectsJsonBody: true }),
-      cmd('suite', 'POST', '/eval/suite', 'Run a full eval suite against an agent', { expectsJsonBody: true }),
+      cmd('suite', 'POST', '/eval/suite', 'Run a full eval suite against an agent (pass { suite: "swe-bench-lite" } in body)', { expectsJsonBody: true }),
     ],
   },
   {
@@ -366,8 +381,17 @@ const COMMAND_GROUPS = [
       cmd('delete', 'DELETE', '/mcp-servers/:id', 'Delete MCP server'),
       cmd('test', 'POST', '/mcp-servers/:id/test', 'Test MCP server connection'),
       cmd('tools', 'GET', '/mcp-servers/:id/tools', 'List tools available on an MCP server'),
+      cmd('tools-info', 'GET', '/mcp-servers/:id/tools-info', 'List tools with token-cost estimates and exposure status'),
       cmd('conformance', 'POST', '/mcp-servers/:id/conformance', 'Run MCP conformance checks for a server', { expectsJsonBody: true }),
       cmd('invoke', 'POST', '/mcp-servers/:id/invoke', 'Invoke an MCP tool on a server', { expectsJsonBody: true }),
+    ],
+  },
+  {
+    name: 'mcp-registry',
+    description: 'Browse the public SwarmDock MCP Registry',
+    commands: [
+      cmd('search', 'GET', '/mcp-registry', 'Search registry servers (supports --query q=postgres,limit=20)'),
+      cmd('get', 'GET', '/mcp-registry/:slug', 'Get registry server detail by slug'),
     ],
   },
   {
@@ -534,6 +558,7 @@ const COMMAND_GROUPS = [
       cmd('list', 'GET', '/runs', 'List runs (use --query sessionId=, --query status=, --query limit=)'),
       cmd('get', 'GET', '/runs/:id', 'Get run by id'),
       cmd('events', 'GET', '/runs/:id/events', 'Get run event history by run id'),
+      cmd('brief', 'GET', '/runs/:id/brief', 'Get deterministic run brief by run id'),
     ],
   },
   {
@@ -578,12 +603,16 @@ const COMMAND_GROUPS = [
       cmd('messages-send', 'POST', '/chats/:id/messages', 'Append a user/system message to a chat', { expectsJsonBody: true }),
       cmd('messages-delete', 'DELETE', '/chats/:id/messages', 'Delete a message from a chat', { expectsJsonBody: true }),
       cmd('edit-resend', 'POST', '/chats/:id/edit-resend', 'Edit and resend from a specific message index', { expectsJsonBody: true }),
+      cmd('turn-snapshot', 'GET', '/chats/:id/turns/:index/snapshot', 'Snapshot the input state of a prior user turn (for external replay)'),
       cmd('chat', 'POST', '/chats/:id/chat', 'Send chat message (streaming)', {
         expectsJsonBody: true,
         responseType: 'sse',
       }),
       cmd('stop', 'POST', '/chats/:id/stop', 'Stop chat run(s)'),
-      cmd('clear', 'POST', '/chats/:id/clear', 'Clear chat messages'),
+      cmd('clear', 'POST', '/chats/:id/clear', 'Clear chat messages (returns undoToken with a 30s TTL)'),
+      cmd('clear-undo', 'POST', '/chats/:id/clear/undo', 'Restore a cleared chat via its undoToken', { expectsJsonBody: true }),
+      cmd('compact', 'POST', '/chats/:id/compact', 'Summarize and compact chat history (accepts optional keepLastN)', { expectsJsonBody: true }),
+      cmd('context-status', 'GET', '/chats/:id/context-status', 'Report token usage and context-window status for a chat'),
       cmd('browser-status', 'GET', '/chats/:id/browser', 'Check browser status'),
       cmd('browser-close', 'DELETE', '/chats/:id/browser', 'Close browser'),
       cmd('mailbox', 'GET', '/chats/:id/mailbox', 'List chat mailbox envelopes'),
@@ -607,6 +636,7 @@ const COMMAND_GROUPS = [
         defaultBody: { action: 'status' },
       }),
       cmd('checkpoints', 'GET', '/chats/:id/checkpoints', 'List checkpoint history for a chat'),
+      cmd('execution-log', 'GET', '/chats/:id/execution-log', 'Get execution log entries for a chat'),
       cmd('migrate-messages', 'POST', '/chats/migrate-messages', 'Migrate messages from session blobs to relational table'),
     ],
   },
@@ -636,6 +666,18 @@ const COMMAND_GROUPS = [
       cmd('dismiss', 'POST', '/learned-skills/:id?action=dismiss', 'Dismiss a learned skill'),
       cmd('delete', 'DELETE', '/learned-skills/:id', 'Delete a learned skill'),
       cmd('review-counts', 'GET', '/skill-review-counts', 'Show pending review counts'),
+    ],
+  },
+  {
+    name: 'share',
+    description: 'Public share links for missions, skills, and sessions',
+    commands: [
+      cmd('list', 'GET', '/share', 'List share links (supports --query entityType=mission,entityId=...)'),
+      cmd('mint', 'POST', '/share', 'Mint a new share link', { expectsJsonBody: true }),
+      cmd('get', 'GET', '/share/:id', 'Get a share link by id'),
+      cmd('revoke', 'DELETE', '/share/:id', 'Revoke a share link'),
+      cmd('resolve', 'GET', '/s/:token', 'Resolve a public share token to its scrubbed payload'),
+      cmd('raw', 'GET', '/s/:token/raw', 'Fetch the raw markdown body for a share token (skill/mission/session)'),
     ],
   },
   {
@@ -746,6 +788,7 @@ const COMMAND_GROUPS = [
     description: 'Usage and cost summary',
     commands: [
       cmd('get', 'GET', '/usage', 'Get usage summary'),
+      cmd('live', 'GET', '/usage/live', 'Get live per-session usage (use --query sessionId=...)'),
     ],
   },
   {
@@ -801,6 +844,67 @@ const COMMAND_GROUPS = [
       cmd('create', 'POST', '/goals', 'Create a goal', { expectsJsonBody: true }),
       cmd('update', 'PATCH', '/goals/:id', 'Update a goal', { expectsJsonBody: true }),
       cmd('delete', 'DELETE', '/goals/:id', 'Delete a goal'),
+    ],
+  },
+  {
+    name: 'missions',
+    description: 'Manage autonomous missions',
+    commands: [
+      cmd('list', 'GET', '/missions', 'List autonomous missions'),
+      cmd('get', 'GET', '/missions/:id', 'Get a mission by id'),
+      cmd('create', 'POST', '/missions', 'Create an autonomous mission', { expectsJsonBody: true }),
+      cmd('update', 'PUT', '/missions/:id', 'Update a mission', { expectsJsonBody: true }),
+      cmd('delete', 'DELETE', '/missions/:id', 'Delete a mission'),
+      cmd('control', 'POST', '/missions/:id/control', 'Start, pause, resume, cancel, complete, or fail a mission', { expectsJsonBody: true }),
+      cmd('reports', 'GET', '/missions/:id/reports', 'List mission reports'),
+      cmd('report-now', 'POST', '/missions/:id/reports', 'Force-generate a mission report now'),
+      cmd('events', 'GET', '/missions/:id/events', 'List mission events (use --query sinceAt=..., --query untilAt=...)'),
+      cmd('templates', 'GET', '/missions/templates', 'List built-in mission templates'),
+      cmd('instantiate', 'POST', '/missions/templates/:id/instantiate', 'Create a mission from a template', { expectsJsonBody: true }),
+    ],
+  },
+  {
+    name: 'workspaces',
+    description: 'Manage logical workspaces (multi-workspace scaffolding)',
+    commands: [
+      cmd('list', 'GET', '/workspaces', 'List workspaces'),
+      cmd('create', 'POST', '/workspaces', 'Create a workspace', { expectsJsonBody: true }),
+      cmd('update', 'PATCH', '/workspaces', 'Update a workspace', { expectsJsonBody: true }),
+      cmd('delete', 'DELETE', '/workspaces', 'Delete a workspace (use --query id=...)'),
+      cmd('active', 'GET', '/workspaces/active', 'Get the active workspace'),
+      cmd('set-active', 'POST', '/workspaces/active', 'Set the active workspace', { expectsJsonBody: true }),
+    ],
+  },
+  {
+    name: 'workflow-states',
+    description: 'Manage customizable task workflow states',
+    commands: [
+      cmd('list', 'GET', '/task-workflow-states', 'List workflow states'),
+      cmd('create', 'POST', '/task-workflow-states', 'Create or update a workflow state', { expectsJsonBody: true }),
+      cmd('delete', 'DELETE', '/task-workflow-states', 'Delete a workflow state (use --query id=... or --query reset=true)'),
+    ],
+  },
+  {
+    name: 'config-versions',
+    description: 'Inspect and restore configuration version history',
+    commands: [
+      cmd('list', 'GET', '/config-versions', 'List versions for an entity (use --query entityKind=agent,entityId=...)'),
+      cmd('restore', 'POST', '/config-versions/restore', 'Restore an entity to a prior version', { expectsJsonBody: true }),
+    ],
+  },
+  {
+    name: 'cost-attribution',
+    description: 'Aggregate LLM cost by billing-code tags',
+    commands: [
+      cmd('by-code', 'GET', '/usage/by-code', 'Roll up cost by billing code (use --query codes=foo,bar,range=7d)'),
+    ],
+  },
+  {
+    name: 'chatroom-policy',
+    description: 'Configure chatroom delegation refusal policies',
+    commands: [
+      cmd('set', 'POST', '/chatrooms/refusal-policy', 'Set onRefusal policy for a chatroom', { expectsJsonBody: true }),
+      cmd('simulate', 'PUT', '/chatrooms/refusal-policy', 'Simulate a refusal-handling decision', { expectsJsonBody: true }),
     ],
   },
   {
@@ -912,8 +1016,14 @@ function resolveAccessKey(opts, env, cwd) {
   const envKey = env.SWARMCLAW_API_KEY || env.SC_ACCESS_KEY || env.SWARMCLAW_ACCESS_KEY || ''
   if (envKey) return String(envKey).trim()
 
-  const keyFile = path.join(cwd, 'platform-api-key.txt')
-  if (fs.existsSync(keyFile)) {
+  const keyLocations = [
+    path.join(cwd, 'platform-api-key.txt'),
+  ]
+  const homeDir = String(env.SWARMCLAW_HOME || '').trim()
+  if (homeDir) keyLocations.push(path.join(homeDir, 'platform-api-key.txt'))
+
+  for (const keyFile of keyLocations) {
+    if (!fs.existsSync(keyFile)) continue
     const content = fs.readFileSync(keyFile, 'utf8').trim()
     if (content) return content
   }

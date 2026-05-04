@@ -82,6 +82,42 @@ export function buildIdentitySection(
 }
 
 // ---------------------------------------------------------------------------
+// Planning Mode — opt-in, per-agent
+// ---------------------------------------------------------------------------
+
+/**
+ * When `agent.planningMode === 'strict'`, inject a plan-enforcement section
+ * that tells the model to emit a [MAIN_LOOP_PLAN]{...} block before tool use
+ * on any multi-step turn. The existing main-agent-loop parser in
+ * `parseMainLoopPlan()` consumes these tokens and populates planSteps /
+ * currentPlanStep / completedPlanSteps in MainLoopState.
+ *
+ * Returns null when planning mode is off or minimal prompt mode is active.
+ */
+export function buildPlanningModeSection(
+  agent: Agent | null | undefined,
+  isMinimalPrompt: boolean,
+): string | null {
+  if (!agent || isMinimalPrompt) return null
+  if (agent.planningMode !== 'strict') return null
+  return [
+    '## Planning Mode: Strict',
+    '',
+    'Before any multi-step work (two or more tool calls or file edits), emit a single machine-readable plan block on its own line:',
+    '',
+    '```',
+    '[MAIN_LOOP_PLAN]{"steps":["step 1","step 2","step 3"],"current_step":"step 1","completed_steps":[]}',
+    '```',
+    '',
+    'Rules:',
+    '- Each step should be a short imperative phrase (≤80 chars).',
+    '- Update `current_step` as you advance, and append finished steps to `completed_steps`.',
+    '- Skip the block for trivial single-tool responses or pure Q&A.',
+    '- The block is parsed by the runtime; do not wrap it in prose, code fences, or extra punctuation.',
+  ].join('\n')
+}
+
+// ---------------------------------------------------------------------------
 // Thinking Level Guidance
 // ---------------------------------------------------------------------------
 

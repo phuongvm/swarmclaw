@@ -17,6 +17,7 @@ import { loadRuntimeSettings, getAgentLoopRecursionLimit } from '@/lib/server/ru
 import { truncateToolResultText } from '@/lib/server/chat-execution/tool-result-guard'
 import {
   buildIdentitySection,
+  buildPlanningModeSection,
   buildThinkingSection,
   buildRuntimeOrientationSection,
   buildWorkspaceSection,
@@ -384,6 +385,8 @@ async function streamAgentChatCore(opts: StreamAgentChatOpts): Promise<StreamAge
   }
 
   // Composable prompt sections — each builder returns string | null (or string[])
+  const planningBlock = buildPlanningModeSection(sessionAgent, isMinimalPrompt)
+  if (planningBlock) promptParts.push(planningBlock)
   const thinkingBlock = buildThinkingSection(agentThinkingLevel, isMinimalPrompt)
   if (thinkingBlock) promptParts.push(thinkingBlock)
   const { rootSessionId } = resolveSessionLineageIds(session)

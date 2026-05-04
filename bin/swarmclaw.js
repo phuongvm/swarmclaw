@@ -3,6 +3,8 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 
 const path = require('node:path')
+const fs = require('node:fs')
+const os = require('node:os')
 const { spawnSync } = require('node:child_process')
 
 // Legacy TS CLI groups/actions that provide richer, command-specific options.
@@ -142,6 +144,79 @@ Show the installed SwarmClaw package version.
 `.trim() + '\n')
 }
 
+function readUserServiceSwarmclawHome() {
+  const homeDir = process.env.HOME || os.homedir()
+  const servicePath = path.join(homeDir, '.config', 'systemd', 'user', 'swarmclaw.service')
+  try {
+    const text = fs.readFileSync(servicePath, 'utf8')
+    const lines = text.split(/\r?\n/)
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('Environment=')) continue
+      let value = trimmed.slice('Environment='.length).trim()
+      if (value.startsWith('"') && value.endsWith('"')) {
+        value = value.slice(1, -1)
+      }
+      if (!value.startsWith('SWARMCLAW_HOME=')) continue
+      const homeValue = value.slice('SWARMCLAW_HOME='.length).trim()
+      if (homeValue) return homeValue
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function getUserServicePath() {
+  const homeDir = process.env.HOME || os.homedir()
+  return path.join(homeDir, '.config', 'systemd', 'user', 'swarmclaw.service')
+}
+
+function hasUserSystemdService() {
+  return fs.existsSync(getUserServicePath())
+}
+
+function runSystemctlUser(args) {
+  return spawnSync('systemctl', ['--user', ...args], { stdio: 'inherit', env: process.env })
+}
+
+function hasServerLifecycleFlags(argv) {
+  return argv.some((arg) => (
+    arg === '--build'
+    || arg === '-d'
+    || arg === '--detach'
+    || arg === '--port'
+    || arg === '--ws-port'
+    || arg === '--host'
+  ))
+}
+
+function handleServiceLifecycle(top, argv) {
+  // If the user passed host/port/build flags, fall back to local server-cmd behavior.
+  const hasServerFlags = hasServerLifecycleFlags(argv)
+  if (hasServerFlags || !hasUserSystemdService()) return false
+
+  const unit = 'swarmclaw.service'
+  if (top === 'run' || top === 'start') {
+    const started = runSystemctlUser(['start', unit])
+    if (typeof started.status === 'number') process.exitCode = started.status
+    return true
+  }
+  if (top === 'stop') {
+    const stopped = runSystemctlUser(['stop', unit])
+    if (typeof stopped.status === 'number') process.exitCode = stopped.status
+    return true
+  }
+
+  return false
+}
+
+function applyServiceHomeDefault() {
+  if (typeof process.env.SWARMCLAW_HOME === 'string' && process.env.SWARMCLAW_HOME.trim()) return
+  const serviceHome = readUserServiceSwarmclawHome()
+  if (serviceHome) process.env.SWARMCLAW_HOME = serviceHome
+}
+
 async function runMappedCli(argv) {
   const cliPath = path.join(__dirname, '..', 'src', 'cli', 'index.js')
   const cliModule = await import(cliPath)
@@ -196,6 +271,8 @@ async function runHelp(argv) {
 }
 
 async function main() {
+  applyServiceHomeDefault()
+
   const argv = process.argv.slice(2)
   const top = argv[0]
 
@@ -233,10 +310,20 @@ async function main() {
     }
   }
   if (top === 'run' || top === 'start') {
+    if (handleServiceLifecycle(top, argv.slice(1))) return
     await require('./server-cmd.js').main(argv.slice(1))
     return
   }
   if (top === 'status' || top === 'stop') {
+    if (top === 'status' && hasUserSystemdService() && !hasServerLifecycleFlags(argv.slice(1))) {
+      const serviceStatus = runSystemctlUser(['status', 'swarmclaw.service', '--no-pager'])
+      const apiStatusCode = await runMappedCli(['system-status', 'get'])
+      const serviceCode = typeof serviceStatus.status === 'number' ? serviceStatus.status : 1
+      const apiCode = typeof apiStatusCode === 'number' ? apiStatusCode : 1
+      process.exitCode = serviceCode !== 0 ? serviceCode : apiCode
+      return
+    }
+    if (handleServiceLifecycle(top, argv.slice(1))) return
     await require('./server-cmd.js').main([top, ...argv.slice(1)])
     return
   }

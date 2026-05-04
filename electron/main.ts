@@ -1,12 +1,16 @@
-import { app, BrowserWindow, dialog, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron'
+import fs from 'node:fs'
+import path from 'node:path'
 import { resolveRuntimePaths, RuntimePaths } from './paths'
-import { ServerHandle, startEmbeddedServer } from './server-lifecycle'
+import { ServerHandle, startEmbeddedServer, tailLogFile } from './server-lifecycle'
 import { buildAppMenu } from './menu'
 
 const DEV_URL_DEFAULT = 'http://127.0.0.1:3456'
+const LOG_TAIL_BYTES = 1500
 
 let mainWindow: BrowserWindow | null = null
 let serverHandle: ServerHandle | null = null
+let serverLogFile: string | null = null
 let isQuitting = false
 
 const gotLock = app.requestSingleInstanceLock()
@@ -55,6 +59,12 @@ async function onReady(): Promise<void> {
   const paths = resolveRuntimePaths()
   buildAppMenu(paths, () => mainWindow)
 
+  const iconPath = resolveIconPath()
+  if (process.platform === 'darwin' && iconPath && app.dock) {
+    const img = nativeImage.createFromPath(iconPath)
+    if (!img.isEmpty()) app.dock.setIcon(img)
+  }
+
   if (!app.isPackaged) {
     const devUrl = process.env.SWARMCLAW_DEV_URL || DEV_URL_DEFAULT
     console.log(`[swarmclaw] dev mode, loading ${devUrl}`)
@@ -62,9 +72,13 @@ async function onReady(): Promise<void> {
     return
   }
 
+  serverLogFile = path.join(app.getPath('userData'), 'logs', 'server.log')
+  fs.mkdirSync(path.dirname(serverLogFile), { recursive: true })
+
   try {
     serverHandle = await startEmbeddedServer({
       paths,
+      logFile: serverLogFile,
       onStdout: (c) => process.stdout.write(`[swarmclaw] ${c}`),
       onStderr: (c) => process.stderr.write(`[swarmclaw] ${c}`),
       onExit: (code, signal) => {
@@ -84,7 +98,15 @@ async function onReady(): Promise<void> {
   void import('./updater').then((m) => m.initAutoUpdater())
 }
 
+function resolveIconPath(): string | undefined {
+  const candidate = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.png')
+    : path.join(__dirname, '..', 'resources', 'icon.png')
+  return fs.existsSync(candidate) ? candidate : undefined
+}
+
 function createMainWindow(startUrl: string): void {
+  const iconPath = resolveIconPath()
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -92,6 +114,7 @@ function createMainWindow(startUrl: string): void {
     minHeight: 640,
     backgroundColor: '#0b0b0f',
     show: true,
+    ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -128,29 +151,43 @@ function createMainWindow(startUrl: string): void {
 }
 
 async function showServerCrashDialog(code: number | null, signal: NodeJS.Signals | null): Promise<void> {
+  const buttons = serverLogFile ? ['Open Logs Folder', 'Quit'] : ['Quit']
+  const quitButtonId = buttons.length - 1
+  const detail = buildLogDetail(`code=${code ?? 'null'} signal=${signal ?? 'none'}`)
   const res = await dialog.showMessageBox({
     type: 'error',
-    buttons: ['Quit', 'Copy logs path'],
-    defaultId: 0,
-    cancelId: 0,
+    buttons,
+    defaultId: quitButtonId,
+    cancelId: quitButtonId,
     title: 'SwarmClaw stopped',
     message: 'The SwarmClaw server exited unexpectedly.',
-    detail: `code=${code ?? 'null'} signal=${signal ?? 'none'}`,
+    detail,
   })
-  if (res.response === 1 && serverHandle) {
-    // best-effort: don't await
-  }
+  if (serverLogFile && res.response === 0) shell.showItemInFolder(serverLogFile)
   app.exit(1)
 }
 
 async function showStartupFailureDialog(err: unknown, paths: RuntimePaths): Promise<void> {
   const message = err instanceof Error ? err.message : String(err)
-  await dialog.showMessageBox({
+  const base = `${message}\n\nStandalone entry: ${paths.standaloneEntry}\nData dir: ${paths.dataDir}`
+  const detail = buildLogDetail(base)
+  const buttons = serverLogFile ? ['Open Logs Folder', 'Quit'] : ['Quit']
+  const quitButtonId = buttons.length - 1
+  const res = await dialog.showMessageBox({
     type: 'error',
-    buttons: ['Quit'],
-    defaultId: 0,
+    buttons,
+    defaultId: quitButtonId,
+    cancelId: quitButtonId,
     title: 'SwarmClaw failed to start',
     message: 'The embedded server did not start.',
-    detail: `${message}\n\nStandalone entry: ${paths.standaloneEntry}\nData dir: ${paths.dataDir}`,
+    detail,
   })
+  if (serverLogFile && res.response === 0) shell.showItemInFolder(serverLogFile)
+}
+
+function buildLogDetail(base: string): string {
+  if (!serverLogFile) return base
+  const tail = tailLogFile(serverLogFile, LOG_TAIL_BYTES).trim()
+  if (!tail) return `${base}\n\nLog file: ${serverLogFile}\n(no output captured yet)`
+  return `${base}\n\nLog tail (${serverLogFile}):\n${tail}`
 }

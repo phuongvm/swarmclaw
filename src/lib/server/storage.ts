@@ -26,6 +26,9 @@ import type {
   KnowledgeSource,
   LearnedSkill,
   Message,
+  Mission,
+  MissionEvent,
+  MissionReport,
   ProtocolTemplate,
   ProtocolRun,
   ProtocolRunEvent,
@@ -87,7 +90,7 @@ const DB_PATH = IS_BUILD_BOOTSTRAP ? ':memory:' : path.join(DATA_DIR, 'swarmclaw
 const db = new Database(DB_PATH)
 if (!IS_BUILD_BOOTSTRAP) {
   db.pragma('journal_mode = WAL')
-  db.pragma('busy_timeout = 5000')
+  db.pragma('busy_timeout = 15000')
   db.pragma('synchronous = NORMAL')
   db.pragma('cache_size = -64000')
   db.pragma('mmap_size = 268435456')
@@ -176,6 +179,10 @@ const COLLECTIONS = [
   'wallets',
   'wallet_transactions',
   'goals',
+  'agent_missions',
+  'mission_reports',
+  'agent_mission_events',
+  'share_links',
 ] as const
 
 export type StorageCollection = (typeof COLLECTIONS)[number]
@@ -1045,6 +1052,7 @@ const APP_SETTINGS_SECRET_FIELDS = [
   'elevenLabsApiKey',
   'tavilyApiKey',
   'braveApiKey',
+  'exaApiKey',
 ] as const
 
 const ENCRYPTED_APP_SETTINGS_KEY = '__encryptedAppSettings'
@@ -1684,6 +1692,29 @@ export const loadGoals = goalsStore.load
 export const loadGoal = goalsStore.loadItem
 export const upsertGoal = goalsStore.upsert
 export const deleteGoalItem = goalsStore.deleteItem
+
+// --- Agent Missions (autonomous goal-driven runs) ---
+const agentMissionsStore = createCollectionStore<Mission>('agent_missions', { ttlMs: 5_000 })
+export const loadAgentMissions = agentMissionsStore.load
+export const saveAgentMissions = agentMissionsStore.save
+export const loadAgentMission = agentMissionsStore.loadItem
+export const upsertAgentMission = agentMissionsStore.upsert
+export const patchAgentMission = agentMissionsStore.patch
+export const deleteAgentMission = agentMissionsStore.deleteItem
+
+const missionReportsStore = createCollectionStore<MissionReport>('mission_reports')
+export const loadMissionReports = missionReportsStore.load
+export const saveMissionReports = missionReportsStore.save
+export const loadMissionReport = missionReportsStore.loadItem
+export const upsertMissionReport = missionReportsStore.upsert
+export const deleteMissionReport = missionReportsStore.deleteItem
+
+const agentMissionEventsStore = createCollectionStore<MissionEvent>('agent_mission_events')
+export const loadAgentMissionEvents = agentMissionEventsStore.load
+export const saveAgentMissionEvents = agentMissionEventsStore.save
+export const loadAgentMissionEvent = agentMissionEventsStore.loadItem
+export const upsertAgentMissionEvent = agentMissionEventsStore.upsert
+export const deleteAgentMissionEvent = agentMissionEventsStore.deleteItem
 
 function legacyMissionStatusToWorkingStatus(value: unknown): 'idle' | 'progress' | 'blocked' | 'completed' {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : ''

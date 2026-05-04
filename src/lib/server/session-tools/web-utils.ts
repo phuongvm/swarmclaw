@@ -102,6 +102,7 @@ export function buildBrowserStdioServerParams(
     allowUnrestrictedFileAccess?: boolean
   },
 ) {
+  const browserName = 'chromium'
   const cliCandidates = [
     path.join(process.cwd(), 'node_modules', '@playwright', 'mcp', 'cli.js'),
     path.join(process.cwd(), '[project]', 'node_modules', '@playwright', 'mcp', 'cli.js'),
@@ -134,6 +135,7 @@ export function buildBrowserStdioServerParams(
     }
   } else {
     args.push(
+      '--browser', browserName,
       '--headless',
       '--user-data-dir', profileDir,
     )
@@ -145,6 +147,7 @@ export function buildBrowserStdioServerParams(
     env: {
       ...env,
       ...(cdpEndpoint ? { PLAYWRIGHT_MCP_CDP_ENDPOINT: cdpEndpoint } : {
+        PLAYWRIGHT_MCP_BROWSER: browserName,
         PLAYWRIGHT_MCP_USER_DATA_DIR: profileDir,
         PLAYWRIGHT_MCP_HEADLESS: '1',
       }),

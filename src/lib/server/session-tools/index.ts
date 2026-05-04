@@ -54,7 +54,15 @@ import { enforceFileAccessPolicy } from './file-access-policy'
 
 import { getExtensionManager } from '../extensions'
 import { runCapabilityBeforeToolCall, runCapabilityHook } from '../native-capabilities'
-import { jsonSchemaToZod } from '../mcp-client'
+import { jsonSchemaToZod, sanitizeName } from '../mcp-client'
+import {
+  getPromoter,
+  recordDiscoveredTools,
+  searchDiscoveredTools,
+  shouldExposeMcpTool,
+  type DiscoveredTool,
+} from '../mcp-gateway-runtime'
+import { getOrConnectMcpClient, evictMcpClient, isConnectionLikeError } from '../mcp-connection-pool'
 import {
   getEnabledCapabilitySelection,
   isExternalExtensionId,
@@ -80,6 +88,42 @@ const DELEGATION_TOOL_NAMES = new Set([
   'delegate_to_cursor_cli',
   'delegate_to_qwen_code_cli',
 ])
+
+function inferBareName(langChainName: string, serverName: string): string {
+  const prefix = `mcp_${sanitizeName(serverName)}_`
+  return langChainName.startsWith(prefix) ? langChainName.slice(prefix.length) : langChainName
+}
+
+/**
+ * Wraps an MCP-sourced LangChain tool so connection-class failures (stdio pipe
+ * closed, HTTP reset, etc.) evict the pool entry, letting the next turn
+ * rebuild the client fresh. Non-connection errors (validation, tool logic,
+ * auth) propagate unchanged — we trust the downstream's isError signal.
+ */
+function wrapMcpToolWithPoolEviction(
+  inner: StructuredToolInterface,
+  serverId: string,
+): StructuredToolInterface {
+  const wrappedCallback = async (args: unknown): Promise<unknown> => {
+    try {
+      return await inner.invoke(args as Record<string, unknown>)
+    } catch (err: unknown) {
+      if (isConnectionLikeError(err)) {
+        void evictMcpClient(serverId).catch(() => undefined)
+        log.warn('session-tools', `MCP tool "${inner.name}" connection error — evicted pool entry for ${serverId}`, {
+          error: errorMessage(err),
+        })
+      }
+      throw err
+    }
+  }
+  return tool(wrappedCallback, {
+    name: inner.name,
+    description: inner.description,
+    // Re-use the inner tool's zod schema so shape/validation is identical.
+    schema: (inner as unknown as { schema: z.ZodType }).schema,
+  })
+}
 
 export async function buildSessionTools(cwd: string, enabledExtensions: string[], ctx?: ToolContext): Promise<SessionToolsResult> {
   const tools: StructuredToolInterface[] = []
@@ -221,24 +265,41 @@ export async function buildSessionTools(cwd: string, enabledExtensions: string[]
       ['swarmdock', buildSwarmDockTools],
     ]
 
+    // Track tool names across all phases so duplicates are rejected
+    // consistently. Issue #39: Moonshot rejects duplicate tool names that
+    // most providers silently tolerate, so guarding only Phase 2 (as the
+    // pre-fix code did) was not enough.
+    const existingNames = new Set<string>()
     for (const [extensionId, builder] of nativeBuilders) {
       const builtTools = builder(bctx)
       for (const t of builtTools) {
+        if (existingNames.has(t.name)) {
+          log.warn('session-tools', 'Skipping native tool due to duplicate name', {
+            toolName: t.name,
+            extensionId,
+          })
+          continue
+        }
+        existingNames.add(t.name)
         toolToExtensionMap[t.name] = extensionId
+        tools.push(t)
       }
-      tools.push(...builtTools)
     }
 
     const crudTools = buildCrudTools(bctx)
     for (const toolEntry of crudTools) {
+      if (existingNames.has(toolEntry.name)) {
+        log.warn('session-tools', 'Skipping CRUD tool due to duplicate name', { toolName: toolEntry.name })
+        continue
+      }
+      existingNames.add(toolEntry.name)
       toolToExtensionMap[toolEntry.name] = toolEntry.name
+      tools.push(toolEntry)
     }
-    tools.push(...crudTools)
 
     // 2. Build Extension Tools (Built-in + External)
     try {
       const extensionTools = extensionManager.getTools(activeExtensions)
-      const existingNames = new Set(tools.map((t) => t.name))
       
       for (const entry of extensionTools) {
         const pt = entry.tool
@@ -288,33 +349,88 @@ export async function buildSessionTools(cwd: string, enabledExtensions: string[]
 
     // 3. MCP server tools
     const disabledMcpToolNames = new Set<string>(ctx?.mcpDisabledTools ?? [])
+    const agentEagerTools = Array.isArray(agentRecord?.mcpEagerTools) ? agentRecord.mcpEagerTools : null
+    const sessionPromoter = ctx?.sessionId ? getPromoter(ctx.sessionId) : null
+    let exposedAnyLazyCandidate = false
     if (ctx?.mcpServerIds?.length) {
-      const mcpConnections: Array<{ client: any; transport: any }> = []
       const allMcpServers = loadMcpServers()
       for (const serverId of ctx.mcpServerIds) {
         const config = allMcpServers[serverId]
         if (!config) continue
         try {
-          const { connectMcpServer, mcpToolsToLangChain } = await import('../mcp-client')
-          const conn = await connectMcpServer(config)
-          mcpConnections.push(conn)
+          const { mcpToolsToLangChain } = await import('../mcp-client')
+          const conn = await getOrConnectMcpClient(config)
           const mcpLcTools = await mcpToolsToLangChain(conn.client, config.name)
+          // Discovery cache — so mcp_tool_search can match even on lazy servers
+          // whose tools we don't bind. Populated each turn we connect.
+          const discovered: DiscoveredTool[] = mcpLcTools.map((t) => ({
+            name: inferBareName(t.name, config.name),
+            langChainName: t.name,
+            description: typeof t.description === 'string' ? t.description : undefined,
+            serverId,
+            serverName: config.name,
+          }))
+          recordDiscoveredTools(serverId, discovered)
           for (const t of mcpLcTools) {
-            if (!disabledMcpToolNames.has(t.name)) {
-              toolToExtensionMap[t.name] = `mcp:${serverId}`
-              tools.push(t)
-            }
+            if (disabledMcpToolNames.has(t.name)) continue
+            const bareName = inferBareName(t.name, config.name)
+            const effectiveMode = config.alwaysExpose === undefined ? true : config.alwaysExpose
+            if (effectiveMode !== true) exposedAnyLazyCandidate = true
+            const shouldBind = shouldExposeMcpTool({
+              server: config,
+              toolName: bareName,
+              langChainName: t.name,
+              agentEagerTools,
+              promoter: sessionPromoter,
+            })
+            if (!shouldBind) continue
+            toolToExtensionMap[t.name] = `mcp:${serverId}`
+            tools.push(wrapMcpToolWithPoolEviction(t, serverId))
           }
         } catch (err: unknown) {
           log.warn('session-tools', `Failed to connect MCP server "${config.name}"`, { serverId, error: errorMessage(err) })
         }
       }
-      cleanupFns.push(async () => {
-        const { disconnectMcpServer } = await import('../mcp-client')
-        for (const conn of mcpConnections) {
-          await disconnectMcpServer(conn.client, conn.transport)
-        }
-      })
+      // Connection lifetimes are owned by the pool (hmrSingleton) — no per-turn
+      // cleanup here. Evictions happen on server edit/delete via the mcp-servers
+      // API routes or via the /test endpoint.
+    }
+
+    // 3a. mcp_tool_search meta-tool — bound when any configured MCP server has
+    // a non-eager exposure mode so the agent has a path to discover lazy tools.
+    if (exposedAnyLazyCandidate && sessionPromoter) {
+      const promoter = sessionPromoter
+      toolToExtensionMap['mcp_tool_search'] = '_mcp_gateway'
+      tools.push(
+        tool(
+          async (args) => {
+            const normalized = normalizeToolInputArgs((args ?? {}) as Record<string, unknown>)
+            const query = typeof normalized.query === 'string' ? normalized.query : ''
+            const limit = typeof normalized.limit === 'number' ? normalized.limit : undefined
+            const matches = searchDiscoveredTools(query, limit)
+            for (const m of matches) promoter.promote(m.name)
+            return JSON.stringify({
+              query,
+              matches,
+              note: matches.length
+                ? 'Promoted tools will appear in the tool list on subsequent turns; call them by the listed name.'
+                : 'No matches — tighten your query or check enabled MCP servers.',
+            })
+          },
+          {
+            name: 'mcp_tool_search',
+            description: [
+              'Search for tools provided by configured MCP servers that are not currently bound.',
+              'Use this when you suspect a tool exists but do not see it in your available tools.',
+              'Returns matching tool names and descriptions, and promotes the matches so they show up in subsequent turns.',
+            ].join(' '),
+            schema: z.object({
+              query: z.string().min(1).describe('Keywords to search tool names and descriptions'),
+              limit: z.number().int().min(1).max(50).optional().describe('Max results (default 8)'),
+            }),
+          },
+        ),
+      )
     }
 
     // 4. Always available: request_tool_access

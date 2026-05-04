@@ -13,6 +13,7 @@ export function runWithTempDataDir<T = unknown>(
     dataDir?: string
     workspaceDir?: string
     browserProfilesDir?: string
+    timeoutMs?: number
   } = {},
 ): T {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), options.prefix || 'swarmclaw-test-'))
@@ -38,9 +39,10 @@ export function runWithTempDataDir<T = unknown>(
         ...(browserProfilesDir ? { BROWSER_PROFILES_DIR: browserProfilesDir } : {}),
       },
       encoding: 'utf-8',
+      timeout: options.timeoutMs ?? 120_000,
     })
 
-    assert.equal(result.status, 0, result.stderr || result.stdout || 'subprocess failed')
+    assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout || 'subprocess failed')
 
     const lines = (result.stdout || '')
       .trim()

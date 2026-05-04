@@ -19,7 +19,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Path does not exist' }, { status: 404 })
   }
 
-  const isDir = fs.statSync(resolved).isDirectory()
+  const isDir = fs.statSync(/*turbopackIgnore: true*/ resolved).isDirectory()
   const platform = process.platform
 
   let command: string
@@ -32,11 +32,11 @@ export async function POST(req: Request) {
     args = isDir ? [resolved] : [`/select,${resolved}`]
   } else {
     command = 'xdg-open'
-    args = [isDir ? resolved : path.dirname(resolved)]
+    args = [isDir ? resolved : path.dirname(/*turbopackIgnore: true*/ resolved)]
   }
 
   return new Promise<NextResponse>((resolve) => {
-    const child = spawn(command, args, { stdio: 'ignore' })
+    const child = spawn(/*turbopackIgnore: true*/ command, args, { stdio: 'ignore' })
     child.once('error', (err) => {
       resolve(NextResponse.json({ error: err.message }, { status: 500 }))
     })

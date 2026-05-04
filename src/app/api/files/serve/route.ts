@@ -57,7 +57,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Access denied' }, { status: 403 })
   }
 
-  const stat = fs.statSync(resolved)
+  const stat = fs.statSync(/*turbopackIgnore: true*/ resolved)
   if (!stat.isFile()) {
     return NextResponse.json({ error: 'Not a file' }, { status: 400 })
   }
@@ -67,7 +67,7 @@ export async function GET(req: Request) {
 
   const ext = path.extname(resolved).toLowerCase()
   const contentType = MIME_MAP[ext] || 'application/octet-stream'
-  const content = fs.readFileSync(resolved)
+  const content = fs.readFileSync(/*turbopackIgnore: true*/ resolved)
 
   return new NextResponse(content, {
     headers: {

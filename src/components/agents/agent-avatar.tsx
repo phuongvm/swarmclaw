@@ -2,9 +2,15 @@
 
 import { useMemo } from 'react'
 import multiavatar from '@multiavatar/multiavatar'
-import DOMPurify from 'isomorphic-dompurify'
+import DOMPurify from 'dompurify'
 
+// The browser DOMPurify package runs client-side only; this component is a
+// 'use client' boundary so sanitizeSvg only executes after hydration where
+// `window` is available. We previously used isomorphic-dompurify, but that
+// pulls jsdom (and its @exodus/bytes ESM deps) into every server bundle the
+// component is referenced from, which breaks SSR under Electron 33's Node 20.
 function sanitizeSvg(svg: string): string {
+  if (typeof window === 'undefined') return svg
   return DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } })
 }
 

@@ -32,6 +32,10 @@ export const MessageClassificationSchema = z.object({
   isDeliverableTask: z.boolean(),
   isBroadGoal: z.boolean(),
   isLightweightDirectChat: z.boolean().optional().default(false),
+  isCurrentThreadRecall: z.boolean().optional().default(false),
+  isGreeting: z.boolean().optional().default(false),
+  isAcknowledgement: z.boolean().optional().default(false),
+  isMemoryWriteIntent: z.boolean().optional().default(false),
   hasHumanSignals: z.boolean(),
   hasSignificantEvent: z.boolean(),
   isResearchSynthesis: z.boolean(),
@@ -48,6 +52,10 @@ export interface MessageClassification {
   isDeliverableTask: boolean
   isBroadGoal: boolean
   isLightweightDirectChat?: boolean
+  isCurrentThreadRecall?: boolean
+  isGreeting?: boolean
+  isAcknowledgement?: boolean
+  isMemoryWriteIntent?: boolean
   hasHumanSignals: boolean
   hasSignificantEvent: boolean
   isResearchSynthesis: boolean
@@ -103,6 +111,10 @@ function buildClassificationPrompt(message: string, recentHistory: string): stri
     '- isDeliverableTask (bool): The user wants a concrete artifact produced — a document, report, plan, proposal, landing page, dashboard, HTML file, markdown file, brief, copy, screenshots, or similar deliverable. NOT simple Q&A, code fixes, or single-command tasks.',
     '- isBroadGoal (bool): The message describes a broad, multi-step goal (50+ chars, no code blocks, no file paths, no numbered lists). Short questions ending with "?" are NOT broad goals.',
     '- isLightweightDirectChat (bool): This is a low-signal direct chat turn that should get a natural lightweight reply, such as a greeting, acknowledgment, check-in, or simple social/direct question that does NOT require research, file work, planning, delegation, or tool execution.',
+    '- isCurrentThreadRecall (bool): The user is asking about something from THIS CURRENT CHAT THREAD — e.g. "what were both answers you just gave?", "tell me that number again", "what did I just ask?", "your last reply mentioned X — expand on it". The answer is in the visible conversation history above. Return FALSE when the user is asking about prior conversations, sessions from other days, or things they remember from outside this thread (e.g. "remember when we talked about X last week", "what did we decide yesterday"). Regardless of language or exact phrasing, the signal is: does the answer live in the messages above, or does it require a memory/history lookup?',
+    '- isGreeting (bool): A standalone greeting with no other task — "hi", "hello", "hey there", "good morning", "yo". Returns FALSE if the greeting is followed by a real request.',
+    '- isAcknowledgement (bool): A short acknowledgement / social reply with no action required — "ok", "thanks", "got it", "cool", "makes sense", "sounds good", "nope". Returns FALSE if there is a follow-up question or directive.',
+    '- isMemoryWriteIntent (bool): The user is explicitly asking the assistant to remember, store, save, memorize, forget, or correct a durable fact about themselves, a preference, or a standing instruction — "remember my wife is called Anna", "save this as a preference", "forget what I told you about X", "update your memory: I now prefer Y". Returns FALSE for passive statements that happen to mention memory/remembering without asking for a write.',
     '- hasHumanSignals (bool): The message contains personal signals — preferences ("I prefer", "call me"), relationships ("my wife", "my partner", "my kid"), life events ("birthday", "wedding", "promotion", "moving", "graduation", "hospital"), or personal disclosures.',
     '- hasSignificantEvent (bool): The message mentions a notable life/work event or milestone (birthday, anniversary, wedding, graduation, promotion, new job, relocation, illness, funeral, travel, house, deadline, launch).',
     '- isResearchSynthesis (bool): The task requires gathering information from multiple sources and synthesizing it — research reports, competitive analysis, market overviews, literature reviews, multi-source comparisons. NOT simple factual lookups.',
@@ -121,7 +133,7 @@ function buildClassificationPrompt(message: string, recentHistory: string): stri
     '- Prefer the most execution-relevant taskIntent. Example: "research this and send me a voice note" is "research", not "outreach".',
     '',
     'Output shape:',
-    '{"taskIntent":"coding|research|browsing|outreach|scheduling|general","isDeliverableTask":bool,"isBroadGoal":bool,"isLightweightDirectChat":bool,"hasHumanSignals":bool,"hasSignificantEvent":bool,"isResearchSynthesis":bool,"workType":"coding|research|writing|review|operations|general","wantsScreenshots":bool,"wantsOutboundDelivery":bool,"wantsVoiceDelivery":bool,"explicitToolRequests":[],"confidence":0.0-1.0}',
+    '{"taskIntent":"coding|research|browsing|outreach|scheduling|general","isDeliverableTask":bool,"isBroadGoal":bool,"isLightweightDirectChat":bool,"isCurrentThreadRecall":bool,"isGreeting":bool,"isAcknowledgement":bool,"isMemoryWriteIntent":bool,"hasHumanSignals":bool,"hasSignificantEvent":bool,"isResearchSynthesis":bool,"workType":"coding|research|writing|review|operations|general","wantsScreenshots":bool,"wantsOutboundDelivery":bool,"wantsVoiceDelivery":bool,"explicitToolRequests":[],"confidence":0.0-1.0}',
     '',
     recentHistory ? `Recent context:\n${recentHistory}\n` : '',
     `User message: ${JSON.stringify(message)}`,
@@ -206,7 +218,17 @@ export interface ClassifyMessageInput {
   history?: Message[]
 }
 
-const CLASSIFIER_TIMEOUT_MS = 2_000
+// Timeout sized for Ollama Cloud with a fully-configured agent. Observed
+// classifier calls in the 4-6s range during live testing, with cloud
+// providers (Ollama Cloud, OpenRouter) routinely tipping over the 10s
+// boundary on a cold cache. SC_CLASSIFIER_TIMEOUT_MS overrides for users
+// running consistently slow providers; default raised to 20s so the cloud
+// path actually completes.
+const DEFAULT_CLASSIFIER_TIMEOUT_MS = 20_000
+const CLASSIFIER_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.SC_CLASSIFIER_TIMEOUT_MS)
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : DEFAULT_CLASSIFIER_TIMEOUT_MS
+})()
 
 /**
  * Classify a user message using a single LLM call.
@@ -240,6 +262,9 @@ export async function classifyMessage(
       options?.generateText
         ? options.generateText(prompt)
         : (async () => {
+            // Uses the agent's configured LLM (same model/credential), but
+            // with a lightweight prompt-only call — no agent system prompt,
+            // no tools, no memory injection, no history replay.
             const { llm } = await buildLLM({
               sessionId: input.sessionId,
               agentId: input.agentId || null,
@@ -253,9 +278,16 @@ export async function classifyMessage(
     ])
 
     const durationMs = Date.now() - startMs
-    log.info(TAG, `session=${input.sessionId} completed in ${durationMs}ms`)
-
     const classification = parseClassificationResponse(responseText)
+    log.info(TAG, `session=${input.sessionId} completed in ${durationMs}ms`, classification ? {
+      taskIntent: classification.taskIntent,
+      isCurrentThreadRecall: classification.isCurrentThreadRecall || false,
+      isGreeting: classification.isGreeting || false,
+      isAcknowledgement: classification.isAcknowledgement || false,
+      isMemoryWriteIntent: classification.isMemoryWriteIntent || false,
+      isLightweightDirectChat: classification.isLightweightDirectChat || false,
+      confidence: classification.confidence,
+    } : { parsed: false })
     if (classification) {
       setCache(message, classification)
     }

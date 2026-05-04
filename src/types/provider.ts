@@ -1,4 +1,4 @@
-export type ProviderType = 'claude-cli' | 'codex-cli' | 'opencode-cli' | 'gemini-cli' | 'copilot-cli' | 'droid-cli' | 'cursor-cli' | 'qwen-code-cli' | 'goose' | 'openai' | 'openrouter' | 'ollama' | 'anthropic' | 'openclaw' | 'hermes' | 'google' | 'deepseek' | 'groq' | 'together' | 'mistral' | 'xai' | 'fireworks' | 'nebius' | 'deepinfra'
+export type ProviderType = 'claude-cli' | 'codex-cli' | 'opencode-cli' | 'opencode-web' | 'gemini-cli' | 'copilot-cli' | 'droid-cli' | 'cursor-cli' | 'qwen-code-cli' | 'goose' | 'aider-cli' | 'amp-cli' | 'augment-cli' | 'adal-cli' | 'bob-cli' | 'cline-cli' | 'codebuddy-cli' | 'command-code-cli' | 'continue-cli' | 'cortex-cli' | 'crush-cli' | 'deepagents-cli' | 'firebender-cli' | 'iflow-cli' | 'junie-cli' | 'kilo-code-cli' | 'kimi-cli' | 'kode-cli' | 'mcpjam-cli' | 'mistral-vibe-cli' | 'mux-cli' | 'neovate-cli' | 'openhands-cli' | 'pochi-cli' | 'qoder-cli' | 'replit-cli' | 'roo-code-cli' | 'trae-cn-cli' | 'warp-cli' | 'windsurf-cli' | 'zencoder-cli' | 'openai' | 'openrouter' | 'ollama' | 'anthropic' | 'openclaw' | 'hermes' | 'google' | 'deepseek' | 'groq' | 'together' | 'mistral' | 'xai' | 'fireworks' | 'nebius' | 'deepinfra'
 export type ProviderId = ProviderType | (string & {})
 
 export interface ProviderInfo {
@@ -10,6 +10,8 @@ export interface ProviderInfo {
   requiresApiKey: boolean
   optionalApiKey?: boolean
   requiresEndpoint: boolean
+  /** When true, shows an optional Base URL field in provider settings (e.g. for proxies). */
+  optionalEndpoint?: boolean
   defaultEndpoint?: string
 }
 

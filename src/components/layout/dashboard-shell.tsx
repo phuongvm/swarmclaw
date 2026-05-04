@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { initAudioContext } from '@/lib/tts'
 import { clearStoredAccessKey } from '@/lib/app/api-client'
@@ -13,6 +13,7 @@ import { useSwipe } from '@/hooks/use-swipe'
 import { useWs } from '@/hooks/use-ws'
 import { api } from '@/lib/app/api-client'
 import { pathToView, useNavigate } from '@/lib/app/navigation'
+import { shouldAutoOpenPanelSidebar } from '@/lib/app/view-constants'
 
 import { FullScreenLoader } from '@/components/ui/full-screen-loader'
 import { SidebarRail } from '@/components/layout/sidebar-rail'
@@ -45,6 +46,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
   const [bootTimedOut, setBootTimedOut] = useState(false)
   const [profileSheetOpen, setProfileSheetOpen] = useState(false)
+  const lastAutoOpenedPanelPathRef = useRef<string | null>(null)
   const sidebarOpen = useAppStore((s) => s.sidebarOpen)
   const setSidebarOpen = useAppStore((s) => s.setSidebarOpen)
   const appSettings = useAppStore((s) => s.appSettings)
@@ -164,6 +166,18 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       router.replace('/home')
     }
   }, [pathname, isViewEnabled, router, isAuthPage])
+
+  useEffect(() => {
+    if (isAuthPage) return
+    const currentView = pathToView(pathname)
+    if (!shouldAutoOpenPanelSidebar(currentView, isDesktop)) {
+      lastAutoOpenedPanelPathRef.current = null
+      return
+    }
+    if (lastAutoOpenedPanelPathRef.current === pathname) return
+    lastAutoOpenedPanelPathRef.current = pathname
+    setSidebarOpen(true)
+  }, [isAuthPage, isDesktop, pathname, setSidebarOpen])
 
   // Extension sidebar items
   const refreshExtensionState = useCallback(() => {

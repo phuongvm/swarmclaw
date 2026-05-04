@@ -1,7 +1,8 @@
 import type { Agent } from '@/types/agent'
 import type { AgentCard } from './types'
+import { getAgent, listAgents } from '@/lib/server/agents/agent-repository'
 
-const A2A_PROTOCOL_VERSION = '0.3.0'
+export const A2A_PROTOCOL_VERSION = '0.3.0'
 const SWARMCLAW_VERSION = '1.0.0'
 
 /**
@@ -57,5 +58,44 @@ export function generateAgentCard(agent: Agent, baseUrl: string): AgentCard {
       ...(agent.capabilities ?? []),
       'swarmclaw',
     ],
+  }
+}
+
+function isPubliclyDiscoverableAgent(agent: Agent): boolean {
+  return agent.disabled !== true && !agent.trashedAt
+}
+
+export function buildAgentCardDiscoveryPayload(req: Request): {
+  body: unknown
+  status?: number
+} {
+  const url = new URL(req.url)
+  const agentId = url.searchParams.get('agentId')
+  const baseUrl = url.origin
+
+  if (agentId) {
+    const agent = getAgent(agentId)
+    if (!agent || !isPubliclyDiscoverableAgent(agent)) {
+      return { body: { error: 'Agent not found' }, status: 404 }
+    }
+    return { body: generateAgentCard(agent, baseUrl) }
+  }
+
+  const directory = Object.values(listAgents())
+    .filter(isPubliclyDiscoverableAgent)
+    .map((agent) => ({
+      name: agent.name,
+      description: agent.description || `SwarmClaw agent: ${agent.name}`,
+      agentId: agent.id,
+      apiEndpoint: `${baseUrl}/api/a2a`,
+      cardUrl: `${baseUrl}/.well-known/agent-card.json?agentId=${encodeURIComponent(agent.id)}`,
+    }))
+
+  return {
+    body: {
+      agents: directory,
+      kind: 'directory',
+      protocolVersion: A2A_PROTOCOL_VERSION,
+    },
   }
 }

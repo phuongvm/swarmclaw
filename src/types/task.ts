@@ -143,4 +143,8 @@ export interface BoardTask {
   lastRepairAttemptAt?: number | null
   // Atomic checkout — prevents two runners from starting the same task
   checkoutRunId?: string | null
+  /** Cost attribution tags rolled up by /api/cost/by-code. */
+  billingCodes?: string[]
+  /** Customizable workflow state (separate from `status` lifecycle). */
+  workflowStateId?: string | null
 }

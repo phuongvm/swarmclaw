@@ -214,6 +214,14 @@ describe('memory-db', () => {
       // All terms are <3 chars or stop words
       assert.equal(query, '')
     })
+
+    it('returns a single-term FTS query for short (3-4 char) words', () => {
+      // Single words like "cats", "blue", "dog" must produce a non-empty FTS
+      // query so the memory lookup UI works for short meaningful terms.
+      assert.equal(memDb.buildFtsQuery('cats'), '"cats"')
+      assert.equal(memDb.buildFtsQuery('blue'), '"blue"')
+      assert.equal(memDb.buildFtsQuery('dog'), '"dog"')
+    })
   })
 
   // --- Content hash dedup ---

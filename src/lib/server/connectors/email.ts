@@ -1,8 +1,10 @@
+import fs from 'fs'
+import path from 'path'
 import { ImapFlow } from 'imapflow'
 import { createTransport, type Transporter } from 'nodemailer'
 import { simpleParser } from 'mailparser'
 import type { Connector } from '@/types'
-import type { PlatformConnector, ConnectorInstance, InboundMessage } from './types'
+import type { PlatformConnector, ConnectorInstance, InboundMessage, OutboundSendOptions } from './types'
 import { resolveConnectorIngressReply } from './ingress-delivery'
 import { errorMessage } from '@/lib/shared-utils'
 import { log } from '@/lib/server/logger'
@@ -19,6 +21,26 @@ interface EmailConfig {
   folder?: string
   pollIntervalSec?: number
   subjectPrefix?: string
+}
+
+interface MailAttachment {
+  path: string
+  filename: string
+  contentType?: string
+}
+
+export function buildAttachments(options?: OutboundSendOptions): MailAttachment[] {
+  const source = options?.mediaPath
+  if (!source) return []
+  if (!fs.existsSync(source)) {
+    log.warn(TAG, `Attachment file not found: ${source}`)
+    return []
+  }
+  return [{
+    path: source,
+    filename: options?.fileName || path.basename(source),
+    ...(options?.mimeType ? { contentType: options.mimeType } : {}),
+  }]
 }
 
 function getConfig(connector: Connector): EmailConfig {
@@ -206,7 +228,11 @@ const email: PlatformConnector = {
       }
     }
 
-    async function sendReply(channelId: string, text: string): Promise<void> {
+    async function sendReply(
+      channelId: string,
+      text: string,
+      options?: OutboundSendOptions,
+    ): Promise<void> {
       const sender = senderMap.get(channelId)
       const to = sender?.address || channelId
       const subject = sender?.subject ? `Re: ${sender.subject.replace(/^Re:\s*/i, '')}` : 'Re: SwarmClaw'
@@ -215,7 +241,7 @@ const email: PlatformConnector = {
         from: config.user,
         to,
         subject,
-        text,
+        text: options?.caption || text,
       }
 
       // Thread the reply using In-Reply-To header
@@ -224,8 +250,11 @@ const email: PlatformConnector = {
         mailOptions['references'] = sender.messageId
       }
 
+      const attachments = buildAttachments(options)
+      if (attachments.length > 0) mailOptions['attachments'] = attachments
+
       await smtp.sendMail(mailOptions)
-      log.info(TAG, `Reply sent to ${to}`)
+      log.info(TAG, `Reply sent to ${to}${attachments.length ? ` with ${attachments.length} attachment(s)` : ''}`)
     }
 
     // Connect and start polling
@@ -247,8 +276,8 @@ const email: PlatformConnector = {
         return connected && imap.usable
       },
 
-      async sendMessage(channelId, text) {
-        await sendReply(channelId, text)
+      async sendMessage(channelId, text, options) {
+        await sendReply(channelId, text, options)
       },
 
       async stop() {

@@ -47,3 +47,23 @@ test('provider route upserts builtin override records for enablement changes', (
   assert.equal(output.responsePayload.type, 'builtin')
   assert.equal(output.responsePayload.isEnabled, false)
 })
+
+test('provider route rejects unknown fields per ProviderUpdateSchema.strict()', () => {
+  const output = runWithTempDataDir<{ status: number }>(`
+    const routeMod = await import('./src/app/api/providers/[id]/route')
+    const route = routeMod.default || routeMod
+
+    const response = await route.PUT(
+      new Request('http://local/api/providers/openai', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'builtin', isEnabled: true }),
+      }),
+      { params: Promise.resolve({ id: 'openai' }) },
+    )
+
+    console.log(JSON.stringify({ status: response.status }))
+  `, { prefix: 'swarmclaw-provider-route-strict-test-' })
+
+  assert.equal(output.status, 400)
+})
