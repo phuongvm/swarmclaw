@@ -112,7 +112,7 @@ async function checkOpenAiCompatible(
       max_tokens: 8,
       messages: [{ role: 'user', content: 'Reply OK' }],
     }),
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(90_000), // Increased from 15s to 60s for Hermes Agent approvals
     cache: 'no-store',
   })
   if (!res.ok) {
@@ -250,7 +250,7 @@ async function checkOpenClaw(apiKey: string, endpointRaw: string): Promise<{ ok:
   const result = await wsConnect(wsUrl, token, true, 10_000)
 
   if (!result.ok) {
-    if (result.ws) try { result.ws.close() } catch {}
+    if (result.ws) try { result.ws.close() } catch { }
     return { ok: false, message: result.message, normalizedEndpoint, deviceId, errorCode: result.errorCode }
   }
 
@@ -272,7 +272,7 @@ async function checkOpenClaw(apiKey: string, endpointRaw: string): Promise<{ ok:
     } catch {
       // Model discovery is non-fatal — connection still counts as successful
     }
-    try { result.ws.close() } catch {}
+    try { result.ws.close() } catch { }
   }
 
   return { ok: true, message: 'Connected to OpenClaw gateway.', normalizedEndpoint, deviceId, recommendedModel }

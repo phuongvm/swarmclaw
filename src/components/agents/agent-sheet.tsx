@@ -49,7 +49,7 @@ const AUTO_SYNC_MODEL_PROVIDER_IDS = new Set<ProviderType>([
   'hermes',
   'ollama',
 ])
-const CONNECTION_TEST_TIMEOUT_MS = 40_000
+const CONNECTION_TEST_TIMEOUT_MS = 90_000
 type AgentProviderId = string
 
 function SectionCard({
